@@ -27,16 +27,28 @@ export const NAV_ITEMS = [
     path: '/admin',
     icon: Users,
     blurb: 'Accounts and access',
-    // Shown to administrators only. This hides a link; it does not protect
-    // anything — `/api/admin/*` is behind `require_admin` on the server, and
-    // that is the check that matters. See backend/auth/deps.py.
+    // Administrators only. This is presentation — `/api/admin/*` is behind
+    // `require_admin` on the server, and that is the check that matters. See
+    // backend/auth/deps.py.
     role: 'ADMIN',
+    // Kept out of the sidebar entirely, for everyone. The page is still there
+    // and still works: an administrator reaches it by typing /admin, and
+    // `RequireAdmin` turns anyone else away. The entry stays in this list
+    // rather than being deleted because the header title is looked up here —
+    // remove it and the page renders as "Not found" above a working table.
+    hidden: true,
   },
 ]
 
-/** The items a given role should see in the sidebar. */
+/**
+ * The items to render in the sidebar for a given role.
+ *
+ * Two filters, doing different jobs: `hidden` drops an item from the
+ * navigation while leaving its route and its title intact, and `role` gates
+ * what a given person may see. An item needs to pass both.
+ */
 export function navItemsFor(role) {
-  return NAV_ITEMS.filter((item) => !item.role || item.role === role)
+  return NAV_ITEMS.filter((item) => !item.hidden && (!item.role || item.role === role))
 }
 
 export default NAV_ITEMS
