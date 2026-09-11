@@ -30,10 +30,16 @@ import numpy as np
 
 try:  # package import
     from ..data.fleet_registry import LANES, VESSELS
-    from ..data.fuel_database import FuelType, get_all_fuels, resolve_fuels
+    from ..data.fuel_database import FuelType, get_all_fuels, get_fuel, resolve_fuels
+    from ..data.carbon_intensity import assess_fleet, assess_voyage
+    from ..data.sea_routes import eca_fraction_for
+    from ..data.seasonality import MONTH_NAMES, season_label, seasonal_factor
 except ImportError:  # pragma: no cover - direct script execution
     from data.fleet_registry import LANES, VESSELS
-    from data.fuel_database import FuelType, get_all_fuels, resolve_fuels
+    from data.fuel_database import FuelType, get_all_fuels, get_fuel, resolve_fuels
+    from data.carbon_intensity import assess_fleet, assess_voyage
+    from data.sea_routes import eca_fraction_for
+    from data.seasonality import MONTH_NAMES, season_label, seasonal_factor
 
 OBJECTIVE_NAMES = ("fuel_consumption_tons", "co2_emissions_tons", "operational_cost_usd")
 OBJECTIVE_LABELS = ("Fuel (t)", "CO2e (t)", "Cost (USD)")
@@ -50,6 +56,11 @@ DEFAULT_CARBON_PRICE_USD_PER_TON = 0.0
 FEASIBILITY_BARRIER = 0.15
 #: Additional cost per unit of normalised constraint violation.
 VIOLATION_WEIGHT = 5.0
+#: Fuel sulphur cap inside an Emission Control Area, % m/m (MARPOL Annex VI).
+ECA_SULPHUR_LIMIT_PCT = 0.10
+#: The fuel a non-compliant ship switches to on entering an ECA. Distillate is
+#: the usual answer for a ship without scrubbers.
+ECA_COMPLIANT_FUEL = "MGO"
 
 
 @dataclass(frozen=True)
@@ -106,20 +117,32 @@ class RouteProfile:
     destination: str = ""
     via: str = ""
     cargo: str = ""
+    #: Registry lane this route was drawn from, before any "#2" suffix.
+    lane_name: str = ""
+    #: Share of the voyage inside an Emission Control Area, 0-1.
+    eca_fraction: float = 0.0
+    #: Annual-mean Beaufort before the seasonal multiplier was applied.
+    base_beaufort: float = 0.0
+    #: Seasonal multiplier actually in force for this run.
+    season_factor: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "route_id": self.route_id,
             "name": self.name,
+            "lane_name": self.lane_name or self.name,
             "origin": self.origin,
             "destination": self.destination,
             "via": self.via or None,
             "cargo": self.cargo,
             "distance_nm": round(self.distance_nm, 1),
             "weather_beaufort": round(self.weather_beaufort, 2),
+            "base_beaufort": round(self.base_beaufort, 2),
+            "season_factor": round(self.season_factor, 3),
             "demand_tons": round(self.demand_tons, 1),
             "max_transit_days": round(self.max_transit_days, 2),
             "shore_power_available": self.shore_power_available,
+            "eca_fraction": round(self.eca_fraction, 4),
         }
 
 
@@ -184,8 +207,15 @@ def build_fleet(n_vessels: int, seed: int = 42) -> List[VesselProfile]:
     return fleet
 
 
-def build_routes(n_routes: int, n_vessels: int, seed: int = 42) -> List[RouteProfile]:
-    """Draw ``n_routes`` trade lanes from the registry with demand scaled to the fleet."""
+def build_routes(
+    n_routes: int, n_vessels: int, seed: int = 42, month: Optional[int] = None
+) -> List[RouteProfile]:
+    """
+    Draw ``n_routes`` trade lanes from the registry with demand scaled to the fleet.
+
+    ``month`` applies the seasonal weather multiplier for each lane's basins.
+    Omit it for the annual mean, which is what the registry stores.
+    """
     rng = np.random.default_rng(seed + 1)
     # Busiest lanes first so a small demo network is JNPT–Singapore and
     # JNPT–Jebel Ali rather than Haldia–Yangon.
@@ -200,12 +230,16 @@ def build_routes(n_routes: int, n_vessels: int, seed: int = 42) -> List[RoutePro
 
     routes: List[RouteProfile] = []
     for i, lane in enumerate(chosen):
+        season = seasonal_factor(lane.basins, month) if month else 1.0
+        base = float(lane.weather_beaufort * rng.uniform(0.92, 1.08))
         routes.append(
             RouteProfile(
                 route_id=i,
                 name=f"{lane.name}{_suffix(i, len(ranked))}",
                 distance_nm=float(lane.distance_nm),
-                weather_beaufort=float(np.clip(lane.weather_beaufort * rng.uniform(0.92, 1.08), 1.0, 9.0)),
+                weather_beaufort=float(np.clip(base * season, 1.0, 9.0)),
+                base_beaufort=float(np.clip(base, 1.0, 9.0)),
+                season_factor=float(season),
                 demand_tons=float(total_demand * weights[i]),
                 max_transit_days=float(lane.max_transit_days),
                 shore_power_available=lane.shore_power_available,
@@ -213,6 +247,8 @@ def build_routes(n_routes: int, n_vessels: int, seed: int = 42) -> List[RoutePro
                 destination=lane.destination,
                 via=lane.via,
                 cargo=lane.cargo,
+                lane_name=lane.name,
+                eca_fraction=eca_fraction_for(lane.name),
             )
         )
     return routes
@@ -245,14 +281,23 @@ class FleetOptimizationProblem:
         seed: int = 42,
         carbon_price_usd_per_ton: float = DEFAULT_CARBON_PRICE_USD_PER_TON,
         enforce_demand: bool = True,
+        month: Optional[int] = None,
+        speed_cap_knots: Optional[float] = None,
     ) -> None:
         if n_vessels < 1:
             raise ValueError("n_vessels must be at least 1")
         if n_routes < 1:
             raise ValueError("n_routes must be at least 1")
 
+        self.month = int(month) if month else None
+        #: Compliance year the CII rating is measured against.
+        self.cii_year = 2026
         self.vessels = vessels if vessels is not None else build_fleet(n_vessels, seed)
-        self.routes = routes if routes is not None else build_routes(n_routes, n_vessels, seed)
+        self.routes = (
+            routes
+            if routes is not None
+            else build_routes(n_routes, n_vessels, seed, month=self.month)
+        )
         self.n_vessels = len(self.vessels)
         self.n_routes = len(self.routes)
         self.fuels: List[FuelType] = list(resolve_fuels(list(fuel_types) if fuel_types else None))
@@ -263,6 +308,10 @@ class FleetOptimizationProblem:
         self.seed = seed
         self.carbon_price_usd_per_ton = float(carbon_price_usd_per_ton)
         self.enforce_demand = enforce_demand
+        # A fleet-wide speed limit, as a regulator or a charterer would impose
+        # one. Never pushed below a vessel's minimum manoeuvring speed, which
+        # would make the problem infeasible rather than slow.
+        self.speed_cap_knots = float(speed_cap_knots) if speed_cap_knots else None
         self.n_dimensions = self.n_vessels * self.genes_per_vessel
 
         self._precompute()
@@ -275,6 +324,10 @@ class FleetOptimizationProblem:
         self._design_v = np.array([x.design_speed_knots for x in v], dtype=float)
         self._vmin = np.array([x.min_speed_knots for x in v], dtype=float)
         self._vmax = np.array([x.max_speed_knots for x in v], dtype=float)
+        if self.speed_cap_knots is not None:
+            self._vmax = np.maximum(
+                np.minimum(self._vmax, self.speed_cap_knots), self._vmin + 0.1
+            )
         self._load = np.array([x.cargo_load_pct for x in v], dtype=float)
         self._hotel_kw = np.array([x.hotel_load_kw for x in v], dtype=float)
         self._port_h = np.array([x.port_hours for x in v], dtype=float)
@@ -287,6 +340,7 @@ class FleetOptimizationProblem:
         self._demand = np.array([x.demand_tons for x in r], dtype=float)
         self._max_transit_h = np.array([x.max_transit_days * 24.0 for x in r], dtype=float)
         self._shore_ok = np.array([1.0 if x.shore_power_available else 0.0 for x in r])
+        self._eca_frac = np.array([x.eca_fraction for x in r], dtype=float)
 
         f = self.fuels
         self._f_energy = np.array([x.energy_density_mj_per_kg for x in f], dtype=float)
@@ -295,6 +349,23 @@ class FleetOptimizationProblem:
         self._f_sfc_mult = np.array([x.sfc_multiplier for x in f], dtype=float)
         self._f_avail = np.array([x.availability_score for x in f], dtype=float)
         self._f_readiness = np.array([x.readiness_score for x in f], dtype=float)
+        self._f_sulphur = np.array([x.sulphur_pct for x in f], dtype=float)
+        # A ship burning fuel above the 0.10% ECA cap has to switch to
+        # distillate for the controlled part of the voyage. Price the switch
+        # rather than forbidding the fuel: that is what operators actually do,
+        # and it leaves the solver a real trade-off instead of a wall.
+        #
+        # The switch fuel comes from the full database, not from this run's
+        # chosen subset. A ship that has settled on HFO as its strategic fuel
+        # still buys distillate for the Channel, so restricting the solver to
+        # HFO must not make the premium quietly vanish.
+        compliant = get_fuel(ECA_COMPLIANT_FUEL) or min(
+            get_all_fuels(), key=lambda x: x.sulphur_pct
+        )
+        self._eca_fuel_name = compliant.name
+        self._eca_fuel_cost_gj = float(compliant.cost_per_gj)
+        self._eca_fuel_ef = float(compliant.emission_factor_gco2_per_mj)
+        self._f_needs_switch = (self._f_sulphur > ECA_SULPHUR_LIMIT_PCT + 1e-9).astype(float)
         # Volumetric energy density (MJ/m3) drives the range constraint.
         density_kg_m3 = np.array(
             [
@@ -417,8 +488,22 @@ class FleetOptimizationProblem:
 
         fuel_t = sea_fuel_t + port_fuel_t
         energy_mj = fuel_t * 1000.0 * self._f_energy[fuel_idx]
-        co2_t = energy_mj * self._f_ef[fuel_idx] / 1e6
-        bunker_usd = (energy_mj / 1000.0) * self._f_cost_gj[fuel_idx]
+
+        # Emission Control Areas. A fuel above the 0.10% sulphur cap is illegal
+        # inside one, so the ship switches to distillate for that share of the
+        # voyage: that energy is priced and emits at the switch fuel's rate,
+        # the rest at the chosen fuel's. A ship already on LNG, methanol or
+        # ammonia pays nothing here, which is the whole point — the Rotterdam
+        # and Felixstowe lanes quietly favour clean fuel without anyone having
+        # to hard-code that preference.
+        eca_share = self._eca_frac[route_idx] * self._f_needs_switch[fuel_idx]
+        switched_mj = energy_mj * eca_share
+        native_mj = energy_mj - switched_mj
+
+        co2_t = (native_mj * self._f_ef[fuel_idx] + switched_mj * self._eca_fuel_ef) / 1e6
+        bunker_usd = (
+            native_mj * self._f_cost_gj[fuel_idx] + switched_mj * self._eca_fuel_cost_gj
+        ) / 1000.0
         shore_usd = port_from_shore_kwh * SHORE_POWER_USD_PER_KWH
         total_hours = sea_hours + self._port_h[None, :]
         opex_usd = (total_hours / 24.0) * VESSEL_OPEX_USD_PER_DAY
@@ -435,6 +520,8 @@ class FleetOptimizationProblem:
             "cost_usd": bunker_usd + shore_usd + opex_usd + carbon_usd,
             "bunker_usd": bunker_usd,
             "shore_usd": shore_usd,
+            "eca_share": eca_share,
+            "eca_switch_mj": switched_mj,
             "opex_usd": opex_usd,
             "shore_allowed": shore_allowed,
             "distance": distance,
@@ -598,6 +685,19 @@ class FleetOptimizationProblem:
                     "fuel_tons": round(float(terms["fuel_t"][0, i]), 2),
                     "co2_tons": round(float(terms["co2_t"][0, i]), 2),
                     "cost_usd": round(float(terms["cost_usd"][0, i]), 2),
+                    "dwt": round(float(vessel.dwt), 1),
+                    "eca_fraction": round(float(route.eca_fraction), 4),
+                    "eca_switch_share": round(float(terms["eca_share"][0, i]), 4),
+                    "eca_compliant_fuel": bool(fuel.eca_compliant),
+                    "weather_beaufort": round(float(route.weather_beaufort), 2),
+                    "cii": assess_voyage(
+                        vessel_name=vessel.name,
+                        vessel_type=vessel.vessel_type,
+                        dwt=vessel.dwt,
+                        co2_tons=float(terms["co2_t"][0, i]),
+                        distance_nm=float(terms["distance"][0, i]),
+                        year=self.cii_year,
+                    ),
                 }
             )
 
@@ -634,6 +734,23 @@ class FleetOptimizationProblem:
             "fuel_mix": fuel_mix,
             "route_coverage": route_load,
             "assignments": assignments,
+            "compliance": {
+                "eca_switch_fuel": self._eca_fuel_name,
+                "eca_sulphur_limit_pct": ECA_SULPHUR_LIMIT_PCT,
+                "vessels_needing_switch": int(
+                    sum(1 for a in assignments if a["eca_switch_share"] > 0)
+                ),
+                "eca_switched_energy_mj": round(float(terms["eca_switch_mj"].sum()), 1),
+                "cii": assess_fleet(assignments, year=self.cii_year),
+            },
+            "season": {
+                "month": self.month,
+                "month_name": MONTH_NAMES[self.month - 1] if self.month else None,
+                "label": season_label(self.month) if self.month else "Annual mean",
+                "mean_factor": round(
+                    float(np.mean([r.season_factor for r in self.routes])), 3
+                ),
+            },
         }
 
     def baseline_vector(self) -> np.ndarray:

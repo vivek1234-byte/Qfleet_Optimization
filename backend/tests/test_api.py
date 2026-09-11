@@ -34,12 +34,19 @@ def test_root(client):
 def test_health_reports_subsystems(client):
     body = client.get("/api/health").json()
     assert body["status"] in {"healthy", "degraded"}
-    assert set(body["checks"]) == {"api", "prediction_model", "dataset"}
+    assert set(body["checks"]) == {"api", "accounts", "prediction_model", "dataset"}
 
 
 def test_openapi_lists_every_router(client):
     paths = client.get("/openapi.json").json()["paths"]
-    for prefix in ("/api/optimization", "/api/benchmarks", "/api/prediction", "/api/scenarios"):
+    for prefix in (
+        "/api/auth",
+        "/api/admin",
+        "/api/optimization",
+        "/api/benchmarks",
+        "/api/prediction",
+        "/api/scenarios",
+    ):
         assert any(p.startswith(prefix) for p in paths), f"no routes under {prefix}"
 
 

@@ -8,15 +8,18 @@ actually serve, with sea distances that match published port-to-port tables to
 within a few percent.
 
 Vessel names are fictional (Indian shipping naming conventions, no real IMO
-numbers). Distances are nautical miles by the customary routing — Suez for
-Europe, Malacca for East Asia. Weather is the typical annual-mean Beaufort for
+numbers). Distances are the great-circle length of the routed polyline in
+``sea_routes.py`` — Suez for Europe, Malacca for East Asia — which is how a
+real port-to-port distance table is built. ``test_lane_distances_match_routing``
+pins them to that geometry, so moving a waypoint and forgetting the table is a
+test failure rather than a silent inconsistency. Weather is the typical annual-mean Beaufort for
 the lane; the Arabian Sea and Bay of Bengal run rougher during the south-west
 monsoon, which the higher baselines on those lanes reflect.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,9 @@ class LaneSpec:
     #: Relative trade volume, used to weight demand across the fleet.
     demand_weight: float
     via: str = ""
+    #: Share of the voyage spent in each sea basin, used to apply the right
+    #: seasonal weather. Shares are by distance and sum to 1.
+    basins: Tuple[Tuple[str, float], ...] = (("Arabian Sea", 1.0),)
 
 
 # ---------------------------------------------------------------------------
@@ -89,22 +95,22 @@ VESSELS: List[VesselSpec] = [
 # Trade lanes
 # ---------------------------------------------------------------------------
 LANES: List[LaneSpec] = [
-    LaneSpec("JNPT – Singapore",        "Nhava Sheva", "INNSA", "Singapore",     "SGSIN", 2_450, 4.4, 10.0, "Containers",          True,  1.35),
-    LaneSpec("Mundra – Rotterdam",      "Mundra",      "INMUN", "Rotterdam",     "NLRTM", 6_300, 4.1, 26.0, "Containers",          True,  1.20, via="Suez"),
-    LaneSpec("JNPT – Jebel Ali",        "Nhava Sheva", "INNSA", "Jebel Ali",     "AEJEA", 1_180, 3.8,  6.0, "Containers",          True,  1.30),
-    LaneSpec("Chennai – Colombo",       "Chennai",     "INMAA", "Colombo",       "LKCMB",   580, 3.9,  4.0, "Transhipment boxes",  True,  1.10),
-    LaneSpec("Mundra – Shanghai",       "Mundra",      "INMUN", "Shanghai",      "CNSHA", 4_650, 4.6, 20.0, "Containers",          True,  1.05, via="Malacca"),
-    LaneSpec("Visakhapatnam – Port Klang", "Visakhapatnam", "INVTZ", "Port Klang", "MYPKG", 1_650, 4.3,  8.0, "Steel & containers", True,  0.95),
-    LaneSpec("Paradip – Qingdao",       "Paradip",     "INPRT", "Qingdao",       "CNTAO", 3_900, 4.7, 18.0, "Iron ore",            False, 1.15, via="Malacca"),
-    LaneSpec("Kandla – Jeddah",         "Kandla",      "INIXY", "Jeddah",        "SAJED", 1_720, 4.0,  8.5, "Crude & products",    False, 1.00),
-    LaneSpec("Mumbai – Durban",         "Mumbai",      "INBOM", "Durban",        "ZADUR", 4_250, 4.9, 19.0, "Containers",          True,  0.85),
-    LaneSpec("Kochi – Jeddah",          "Kochi",       "INCOK", "Jeddah",        "SAJED", 2_050, 4.2,  9.5, "Products",            False, 0.80),
-    LaneSpec("Haldia – Yangon",         "Haldia",      "INHAL", "Yangon",        "MMRGN",   800, 4.5,  5.0, "Bulk & general",      False, 0.70),
-    LaneSpec("Kandla – Dar es Salaam",  "Kandla",      "INIXY", "Dar es Salaam", "TZDAR", 2_650, 4.6, 12.0, "Bulk fertiliser",     False, 0.75),
-    LaneSpec("Chennai – Jakarta",       "Chennai",     "INMAA", "Jakarta",       "IDJKT", 1_900, 4.1,  9.0, "Containers",          True,  0.90),
-    LaneSpec("Mormugao – Jinzhou",      "Mormugao",    "INMRM", "Jinzhou",       "CNJIN", 5_100, 4.8, 22.0, "Iron ore",            False, 0.95, via="Malacca"),
-    LaneSpec("JNPT – Felixstowe",       "Nhava Sheva", "INNSA", "Felixstowe",    "GBFXT", 6_450, 4.2, 26.5, "Containers",          True,  1.10, via="Suez"),
-    LaneSpec("Visakhapatnam – Singapore", "Visakhapatnam", "INVTZ", "Singapore", "SGSIN", 1_950, 4.3,  9.0, "Containers",          True,  1.00),
+    LaneSpec("JNPT – Singapore",        "Nhava Sheva", "INNSA", "Singapore",     "SGSIN", 2_520, 4.4, 10.5, "Containers",          True,  1.35, basins=(("Arabian Sea", 0.45), ("Bay of Bengal", 0.30), ("South China Sea", 0.25))),
+    LaneSpec("Mundra – Rotterdam",      "Mundra",      "INMUN", "Rotterdam",     "NLRTM", 6_290, 4.1, 26.0, "Containers",          True,  1.20, via="Suez", basins=(("Arabian Sea", 0.30), ("Red Sea", 0.22), ("Mediterranean", 0.30), ("NE Atlantic", 0.18))),
+    LaneSpec("JNPT – Jebel Ali",        "Nhava Sheva", "INNSA", "Jebel Ali",     "AEJEA", 1_130, 3.8,  5.5, "Containers",          True,  1.30, basins=(("Arabian Sea", 1.0),)),
+    LaneSpec("Chennai – Colombo",       "Chennai",     "INMAA", "Colombo",       "LKCMB",   650, 3.9,  4.5, "Transhipment boxes",  True,  1.10, basins=(("Bay of Bengal", 1.0),)),
+    LaneSpec("Mundra – Shanghai",       "Mundra",      "INMUN", "Shanghai",      "CNSHA", 5_090, 4.6, 22.0, "Containers",          True,  1.05, via="Malacca", basins=(("Arabian Sea", 0.35), ("Bay of Bengal", 0.25), ("South China Sea", 0.25), ("East China Sea", 0.15))),
+    LaneSpec("Visakhapatnam – Port Klang", "Visakhapatnam", "INVTZ", "Port Klang", "MYPKG", 1_420, 4.3,  7.0, "Steel & containers", True,  0.95, basins=(("Bay of Bengal", 0.75), ("South China Sea", 0.25))),
+    LaneSpec("Paradip – Qingdao",       "Paradip",     "INPRT", "Qingdao",       "CNTAO", 4_060, 4.7, 18.5, "Iron ore",            False, 1.15, via="Malacca", basins=(("Bay of Bengal", 0.30), ("South China Sea", 0.40), ("East China Sea", 0.30))),
+    LaneSpec("Kandla – Jeddah",         "Kandla",      "INIXY", "Jeddah",        "SAJED", 2_310, 4.0,  11.5, "Crude & products",    False, 1.00, basins=(("Arabian Sea", 0.75), ("Red Sea", 0.25))),
+    LaneSpec("Mumbai – Durban",         "Mumbai",      "INBOM", "Durban",        "ZADUR", 3_820, 4.9, 17.0, "Containers",          True,  0.85, basins=(("Arabian Sea", 0.35), ("South Indian Ocean", 0.65))),
+    LaneSpec("Kochi – Jeddah",          "Kochi",       "INCOK", "Jeddah",        "SAJED", 2_560, 4.2,  12.0, "Products",            False, 0.80, basins=(("Arabian Sea", 0.78), ("Red Sea", 0.22))),
+    LaneSpec("Haldia – Yangon",         "Haldia",      "INHAL", "Yangon",        "MMRGN",   780, 4.5,  5.0, "Bulk & general",      False, 0.70, basins=(("Bay of Bengal", 1.0),)),
+    LaneSpec("Kandla – Dar es Salaam",  "Kandla",      "INIXY", "Dar es Salaam", "TZDAR", 2_590, 4.6, 11.5, "Bulk fertiliser",     False, 0.75, basins=(("Arabian Sea", 0.55), ("South Indian Ocean", 0.45))),
+    LaneSpec("Chennai – Jakarta",       "Chennai",     "INMAA", "Jakarta",       "IDJKT", 2_130, 4.1,  10.0, "Containers",          True,  0.90, basins=(("Bay of Bengal", 0.55), ("South China Sea", 0.45))),
+    LaneSpec("Mormugao – Jinzhou",      "Mormugao",    "INMRM", "Jinzhou",       "CNJIN", 5_010, 4.8, 21.5, "Iron ore",            False, 0.95, via="Malacca", basins=(("Arabian Sea", 0.25), ("Bay of Bengal", 0.25), ("South China Sea", 0.30), ("East China Sea", 0.20))),
+    LaneSpec("JNPT – Felixstowe",       "Nhava Sheva", "INNSA", "Felixstowe",    "GBFXT", 6_390, 4.2, 26.5, "Containers",          True,  1.10, via="Suez", basins=(("Arabian Sea", 0.30), ("Red Sea", 0.22), ("Mediterranean", 0.29), ("NE Atlantic", 0.19))),
+    LaneSpec("Visakhapatnam – Singapore", "Visakhapatnam", "INVTZ", "Singapore", "SGSIN", 1_580, 4.3,  7.5, "Containers",          True,  1.00, basins=(("Bay of Bengal", 0.72), ("South China Sea", 0.28))),
 ]
 
 

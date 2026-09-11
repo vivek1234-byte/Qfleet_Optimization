@@ -72,6 +72,10 @@ export function shipsFromPlan(result, lanesByName) {
       fuelTons: a.fuel_tons,
       co2Tons: a.co2_tons,
       costUsd: a.cost_usd,
+      ecaFraction: a.eca_fraction ?? 0,
+      ecaSwitchShare: a.eca_switch_share ?? 0,
+      cii: a.cii?.rated ? a.cii.rating : null,
+      ciiDetail: a.cii ?? null,
       // Spread departures so the fleet is not a single convoy leaving together.
       phaseHours: hashUnit(`${a.vessel_name}|${a.route_name}`) * 24 * 14,
     }
@@ -137,6 +141,10 @@ export function shipsFromRegistry(registry, fuelsByName, { limit = 14 } = {}) {
       fuelTons: estimate.fuelTons,
       co2Tons: estimate.co2Tons,
       costUsd: estimate.costUsd,
+      ecaFraction: lane.eca_fraction ?? 0,
+      ecaSwitchShare: 0,
+      cii: null,
+      ciiDetail: null,
       phaseHours: hashUnit(`${vessel.name}|${lane.name}`) * 24 * 14,
     }
   })

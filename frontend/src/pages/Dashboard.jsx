@@ -25,7 +25,8 @@ import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Cell, Pie, PieChart } from 'recharts'
 
-import WorldMap, { useMapViewport } from '../components/WorldMap'
+import VoyageMap from '../components/VoyageMap'
+import { useMapViewport } from '../components/WorldMap'
 import { ChartFrame, ThemedTooltip } from '../components/charts'
 import {
   Alert,
@@ -39,14 +40,25 @@ import {
   StatCard,
   cx,
 } from '../components/ui'
-import { MAP_VIEWS, PORTS, buildLaneGeometry } from '../data/geography'
+import { MAP_VIEWS } from '../data/geography'
 import { useAsync, useFetch } from '../hooks/useApi'
+import { useNetwork } from '../hooks/useNetwork'
 import api from '../lib/api'
 import { OPTIMIZER_PRESETS, VESSEL_TYPE_COLORS } from '../lib/domain'
 import { compact, num, pct, seconds, usd } from '../lib/format'
 import { setActivePlan, useActivePlan } from '../lib/planStore'
 
 const EMPTY = []
+const IDLE_CLOCK = { current: { hours: 0 } }
+const DASHBOARD_LAYERS = {
+  trails: false,
+  names: false,
+  portLabels: true,
+  chokepoints: false,
+  eca: false,
+  graticule: true,
+  weather: false,
+}
 
 function CheckRow({ ok, label, detail }) {
   return (
@@ -67,7 +79,8 @@ function CheckRow({ ok, label, detail }) {
 export default function Dashboard() {
   const navigate = useNavigate()
   const health = useFetch((signal) => api.health({ signal }), [])
-  const registry = useFetch((signal) => api.optimization.registry({ signal }), [])
+  const network = useNetwork()
+  const registry = { data: network.registry, loading: network.loading }
   const modelInfo = useFetch((signal) => api.prediction.modelInfo({ signal }), [])
   const algorithms = useFetch((signal) => api.optimization.algorithms({ signal }), [])
   const optimise = useAsync((signal, body) => api.optimization.optimize(body, { signal }))
@@ -75,17 +88,7 @@ export default function Dashboard() {
 
   const viewport = useMapViewport(MAP_VIEWS.indianOcean.box)
 
-  const lanes = registry.data?.lanes ?? EMPTY
-  const vessels = registry.data?.vessels ?? EMPTY
-  const geometries = useMemo(() => {
-    const out = {}
-    lanes.forEach((lane) => {
-      const geometry = buildLaneGeometry(lane)
-      if (geometry) out[lane.name] = geometry
-    })
-    return out
-  }, [lanes])
-  const ports = useMemo(() => Object.entries(PORTS).map(([name, p]) => ({ name, ...p })), [])
+  const { vessels } = network
 
   const typeSplit = useMemo(() => {
     const counts = {}
@@ -208,13 +211,14 @@ export default function Dashboard() {
             {registry.loading ? (
               <Skeleton className="h-full w-full" />
             ) : (
-              <WorldMap
+              <VoyageMap
                 viewport={viewport}
-                lanes={lanes}
-                geometries={geometries}
-                ports={ports}
-                showChokepoints={false}
-                paused
+                network={network}
+                ships={EMPTY}
+                clockRef={IDLE_CLOCK}
+                running={false}
+                timeScale={0}
+                layers={DASHBOARD_LAYERS}
               />
             )}
           </div>

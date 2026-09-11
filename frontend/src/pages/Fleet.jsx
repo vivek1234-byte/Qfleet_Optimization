@@ -9,10 +9,12 @@
 import { Anchor, Filter, Route, Ship } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import WorldMap, { useMapViewport } from '../components/WorldMap'
+import VoyageMap from '../components/VoyageMap'
+import { useMapViewport } from '../components/WorldMap'
 import {
   Badge,
   Card,
+  Checkbox,
   DataTable,
   ErrorState,
   PageHeader,
@@ -21,13 +23,13 @@ import {
   StatCard,
   cx,
 } from '../components/ui'
-import { MAP_VIEWS, PORTS, buildLaneGeometry } from '../data/geography'
-import { useFetch } from '../hooks/useApi'
-import api from '../lib/api'
+import { MAP_VIEWS } from '../data/geography'
+import { useNetwork } from '../hooks/useNetwork'
 import { VESSEL_TYPE_COLORS, beaufortLabel } from '../lib/domain'
 import { compact, num } from '../lib/format'
 
 const EMPTY = []
+const IDLE_CLOCK = { current: { hours: 0 } }
 
 function VesselCard({ vessel, active, onClick }) {
   const tint = VESSEL_TYPE_COLORS[vessel.vessel_type] ?? '#64748b'
@@ -73,25 +75,15 @@ function VesselCard({ vessel, active, onClick }) {
 }
 
 export default function Fleet() {
-  const registry = useFetch((signal) => api.optimization.registry({ signal }), [])
+  const network = useNetwork()
+  const registry = { data: network.registry, loading: network.loading, error: network.error, refetch: network.refetch }
   const [typeFilter, setTypeFilter] = useState('all')
   const [selectedVessel, setSelectedVessel] = useState(null)
   const [selectedLane, setSelectedLane] = useState(null)
+  const [showEca, setShowEca] = useState(false)
   const viewport = useMapViewport(MAP_VIEWS.indianOcean.box)
 
-  const vessels = registry.data?.vessels ?? EMPTY
-  const lanes = registry.data?.lanes ?? EMPTY
-
-  const geometries = useMemo(() => {
-    const out = {}
-    lanes.forEach((lane) => {
-      const geometry = buildLaneGeometry(lane)
-      if (geometry) out[lane.name] = geometry
-    })
-    return out
-  }, [lanes])
-
-  const ports = useMemo(() => Object.entries(PORTS).map(([name, p]) => ({ name, ...p })), [])
+  const { vessels, lanes } = network
 
   const filtered = useMemo(
     () => (typeFilter === 'all' ? vessels : vessels.filter((v) => v.vessel_type === typeFilter)),
@@ -180,29 +172,45 @@ export default function Fleet() {
         className="mb-5"
         bodyClassName="p-0"
         actions={
-          selectedLane && (
-            <button
-              type="button"
-              onClick={() => setSelectedLane(null)}
-              className="text-faint text-xs underline-offset-2 hover:underline"
-            >
-              Show all
-            </button>
-          )
+          <div className="flex items-center gap-3">
+            <Checkbox
+              label="Emission control areas"
+              checked={showEca}
+              onChange={(e) => setShowEca(e.target.checked)}
+            />
+            {selectedLane && (
+              <button
+                type="button"
+                onClick={() => setSelectedLane(null)}
+                className="text-faint text-xs underline-offset-2 hover:underline"
+              >
+                Show all
+              </button>
+            )}
+          </div>
         }
       >
         <div className="h-[46vh] min-h-[320px] overflow-hidden rounded-b-xl">
           {registry.loading ? (
             <Skeleton className="h-full w-full" />
           ) : (
-            <WorldMap
+            <VoyageMap
               viewport={viewport}
-              lanes={lanes}
-              geometries={geometries}
-              ports={ports}
+              network={network}
+              ships={EMPTY}
+              clockRef={IDLE_CLOCK}
+              running={false}
+              timeScale={0}
+              layers={{
+                trails: false,
+                names: false,
+                portLabels: true,
+                chokepoints: true,
+                eca: showEca,
+                graticule: true,
+                weather: true,
+              }}
               activeLanes={activeLanes}
-              laneColorBy="weather"
-              paused
               onSelectLane={(name) => setSelectedLane((current) => (current === name ? null : name))}
             />
           )}
@@ -290,6 +298,20 @@ export default function Fleet() {
                     {num(row.typical_beaufort, 1)} Bft
                   </span>
                 ),
+              },
+              {
+                key: 'eca_fraction',
+                header: 'In an ECA',
+                align: 'right',
+                help: 'Share of the voyage inside an emission control area',
+                render: (row) =>
+                  row.eca_fraction > 0 ? (
+                    <span className="numeric text-amber-600 dark:text-amber-400">
+                      {num(row.eca_fraction * 100, 1)}%
+                    </span>
+                  ) : (
+                    '—'
+                  ),
               },
               {
                 key: 'shore_power_available',

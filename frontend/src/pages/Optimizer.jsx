@@ -59,7 +59,13 @@ import {
 } from '../components/ui'
 import { useAsync, useFetch } from '../hooks/useApi'
 import api from '../lib/api'
-import { OPTIMIZER_PRESETS, algorithmColor, fuelColor } from '../lib/domain'
+import {
+  MONTHS,
+  OPTIMIZER_PRESETS,
+  algorithmColor,
+  ciiColor,
+  fuelColor,
+} from '../lib/domain'
 import { compact, num, pct, seconds, usd } from '../lib/format'
 import { setActivePlan } from '../lib/planStore'
 
@@ -180,6 +186,31 @@ function ConfigPanel({ config, setConfig, algorithms, fuels, onRun, running, pre
           onChange={set('population_size')}
         />
       </div>
+
+      <Select
+        label="Season"
+        value={config.month}
+        onChange={(e) => setConfig((c) => ({ ...c, month: e.target.value }))}
+        options={[
+          { value: '', label: 'Annual mean' },
+          ...MONTHS.map((m) => ({ value: String(m.value), label: m.label })),
+        ]}
+        hint="Applies the monsoon. July on the Arabian Sea lanes costs real fuel."
+      />
+
+      <NumberInput
+        label="Speed cap"
+        unit="kn"
+        min={9}
+        max={25}
+        step={0.5}
+        value={config.speed_cap_knots}
+        placeholder="none"
+        onChange={(e) =>
+          setConfig((c) => ({ ...c, speed_cap_knots: e.target.value === '' ? '' : Number(e.target.value) }))
+        }
+        hint="A fleet-wide limit. Never applied below a vessel's minimum manoeuvring speed."
+      />
 
       <NumberInput
         label="Carbon price"
@@ -354,6 +385,71 @@ function PlanView({ result }) {
         </Card>
       </div>
 
+      {(plan.compliance || plan.season) && (
+        <Card title="Compliance" description="What the regulators make of this plan">
+          <div className="grid gap-5 sm:grid-cols-3">
+            {plan.compliance?.cii && (
+              <div>
+                <p className="text-faint mb-2 text-xs font-semibold uppercase tracking-wide">
+                  Carbon intensity
+                </p>
+                <div className="flex h-2.5 overflow-hidden rounded-full">
+                  {['A', 'B', 'C', 'D', 'E'].map((band) => {
+                    const n = plan.compliance.cii.distribution[band] ?? 0
+                    if (!n) return null
+                    return (
+                      <div
+                        key={band}
+                        className="h-full"
+                        style={{
+                          width: `${(n / Math.max(plan.compliance.cii.rated_count, 1)) * 100}%`,
+                          backgroundColor: ciiColor(band),
+                        }}
+                        title={`${n} rated ${band}`}
+                      />
+                    )
+                  })}
+                </div>
+                <p className="mt-2 text-sm">
+                  <Badge tone={plan.compliance.cii.compliant_pct >= 60 ? 'eco' : 'warning'}>
+                    {pct(plan.compliance.cii.compliant_pct, 0)} at C or better
+                  </Badge>
+                </p>
+                {plan.compliance.cii.at_risk?.length > 0 && (
+                  <p className="text-faint mt-1.5 text-xs">
+                    {plan.compliance.cii.at_risk.length} at D or E
+                  </p>
+                )}
+              </div>
+            )}
+            <div>
+              <p className="text-faint mb-2 text-xs font-semibold uppercase tracking-wide">
+                Emission control areas
+              </p>
+              <p className="numeric text-2xl font-semibold">
+                {plan.compliance?.vessels_needing_switch ?? 0}
+              </p>
+              <p className="text-faint mt-1 text-xs">
+                vessels must switch to {plan.compliance?.eca_switch_fuel ?? 'distillate'} inside a
+                zone, where sulphur is capped at {plan.compliance?.eca_sulphur_limit_pct ?? 0.1}%.
+                The premium is already priced into the cost above.
+              </p>
+            </div>
+            <div>
+              <p className="text-faint mb-2 text-xs font-semibold uppercase tracking-wide">
+                Conditions
+              </p>
+              <p className="text-sm font-medium">{plan.season?.label ?? 'Annual mean'}</p>
+              <p className="text-faint mt-1 text-xs">
+                {plan.season?.month
+                  ? `Sea state running ×${plan.season.mean_factor} against the annual mean.`
+                  : 'Weather is the annual mean for each lane. Pick a month to model the monsoon.'}
+              </p>
+            </div>
+          </div>
+        </Card>
+      )}
+
       <Card
         title="Vessel assignments"
         description={`${plan.assignments.length} vessels · every row is a decision the solver made`}
@@ -394,6 +490,47 @@ function PlanView({ result }) {
               header: 'Voyage',
               align: 'right',
               render: (row) => `${num(row.voyage_days, 1)} d`,
+            },
+            {
+              key: 'cii',
+              header: 'CII',
+              help: 'IMO carbon intensity rating for this voyage',
+              render: (row) =>
+                row.cii?.rated ? (
+                  <span
+                    className="grid h-5 w-5 place-items-center rounded text-[0.65rem] font-bold text-white"
+                    style={{ backgroundColor: ciiColor(row.cii.rating) }}
+                    title={`Attained ${row.cii.attained_cii} vs required ${row.cii.required_cii} gCO₂/dwt-nm`}
+                  >
+                    {row.cii.rating}
+                  </span>
+                ) : (
+                  '—'
+                ),
+            },
+            {
+              key: 'eca_fraction',
+              header: 'ECA',
+              align: 'right',
+              help: 'Share of the voyage inside an emission control area',
+              render: (row) =>
+                row.eca_fraction > 0 ? (
+                  <span
+                    className={cx(
+                      'numeric',
+                      row.eca_switch_share > 0 && 'text-amber-600 dark:text-amber-400',
+                    )}
+                    title={
+                      row.eca_switch_share > 0
+                        ? 'Must switch to distillate inside the zone'
+                        : 'Already burning a compliant fuel'
+                    }
+                  >
+                    {pct(row.eca_fraction * 100, 0)}
+                  </span>
+                ) : (
+                  '—'
+                ),
             },
             {
               key: 'fuel_tons',
@@ -764,6 +901,8 @@ export default function Optimizer() {
     carbon_price_usd_per_ton: 0,
     weights: [0.4, 0.4, 0.2],
     fuel_types: [],
+    month: '',
+    speed_cap_knots: '',
   })
 
   const requestBody = () => ({
@@ -775,6 +914,8 @@ export default function Optimizer() {
     seed: Number(config.seed),
     objective_weights: config.weights,
     fuel_types: config.fuel_types.length ? config.fuel_types : null,
+    month: config.month === '' ? null : Number(config.month),
+    speed_cap_knots: config.speed_cap_knots === '' ? null : Number(config.speed_cap_knots),
   })
 
   const runOptimise = async () => {
@@ -790,7 +931,7 @@ export default function Optimizer() {
   // scores every solver on the same fixed scalarisation so the comparison is
   // like for like.
   const runCompare = () => {
-    const { objective_weights: _weights, ...problem } = requestBody()
+    const { objective_weights: _weights, speed_cap_knots: _cap, ...problem } = requestBody()
     return compare.run({ ...problem, algorithms: ['qpso', 'qga', 'pso', 'nsga2'] })
   }
 

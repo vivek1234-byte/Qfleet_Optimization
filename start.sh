@@ -18,40 +18,68 @@ say "QFleet - starting"
 
 PYTHON="$(command -v python3 || command -v python || true)"
 [ -n "$PYTHON" ] || die "Python 3.9+ is required but was not found on PATH."
-echo "[1/5] $($PYTHON --version)"
+echo "[1/6] $($PYTHON --version)"
 
-if [ ! -d venv ]; then
-  echo "[2/5] Creating virtual environment..."
-  "$PYTHON" -m venv venv
+# Everything below runs "$PY", the venv's interpreter by absolute path,
+# rather than activating and relying on a bare `python`. A venv records
+# absolute paths when it is created, so a project folder that has been copied
+# or renamed activates "successfully" while `python` quietly falls through to
+# the system interpreter — which is how you get "No module named alembic"
+# out of an environment that has alembic installed. Calling the interpreter
+# by path cannot go wrong that way.
+VENV="$PWD/venv"
+PY="$VENV/bin/python"
+
+if [ ! -x "$PY" ]; then
+  echo "[2/6] Creating virtual environment..."
+  "$PYTHON" -m venv "$VENV"
+elif ! grep -qs "VIRTUAL_ENV=.*$VENV" "$VENV/bin/activate"; then
+  # Created somewhere else and copied here. Re-running venv over the existing
+  # directory rewrites the activation scripts and keeps installed packages.
+  echo "[2/6] Virtual environment was created under a different path - repairing..."
+  "$PYTHON" -m venv "$VENV"
 else
-  echo "[2/5] Virtual environment already exists."
+  echo "[2/6] Virtual environment already exists."
 fi
-# shellcheck disable=SC1091
-source venv/bin/activate
 
-if ! python -c "import fastapi, xgboost, sklearn, pandas" >/dev/null 2>&1; then
-  echo "[3/5] Installing Python dependencies (this takes a few minutes)..."
-  python -m pip install --upgrade pip --quiet
-  python -m pip install -r backend/requirements.txt
+# Name every package needed at startup, the account ones included. A check
+# that only asks about fastapi and pandas passes on an environment built
+# before accounts existed and skips the install they need.
+if ! "$PY" -c "import fastapi, xgboost, sklearn, pandas, sqlalchemy, alembic, bcrypt, jwt" >/dev/null 2>&1; then
+  echo "[3/6] Installing Python dependencies (this takes a few minutes)..."
+  "$PY" -m pip install --upgrade pip --quiet
+  "$PY" -m pip install -r backend/requirements.txt
 else
-  echo "[3/5] Python dependencies already installed."
+  echo "[3/6] Python dependencies already installed."
 fi
 
 if [ ! -f backend/data/datasets/voyage_data.csv ]; then
-  echo "[4/5] Generating the voyage dataset and training the model..."
-  python train_model.py --generate 20000
+  echo "[4/6] Generating the voyage dataset and training the model..."
+  "$PY" train_model.py --generate 20000
 elif [ ! -f backend/prediction/saved_models/xgboost_model.pkl ]; then
-  echo "[4/5] Training the fuel-prediction model..."
-  python train_model.py
+  echo "[4/6] Training the fuel-prediction model..."
+  "$PY" train_model.py
 else
-  echo "[4/5] Dataset and model present."
+  echo "[4/6] Dataset and model present."
 fi
+
+# Accounts. All three steps are safe to repeat: `env` only fills in a
+# placeholder, alembic is a no-op once the schema is current, and `seed`
+# leaves anyone who already exists alone.
+echo "[5/6] Accounts..."
+"$PY" -m backend.manage env
+
+echo "      Applying database migrations..."
+"$PY" -m alembic upgrade head || die "migration failed. If it says \"No module named alembic\",
+        install the dependencies into this project's venv:
+            $PY -m pip install -r backend/requirements.txt"
+"$PY" -m backend.manage seed
 
 # --host is explicit on purpose: both servers bind to localhost only, so
 # nothing on the venue Wi-Fi can reach them. Change to 0.0.0.0 only for a
 # deliberate deployment behind a reverse proxy, never on a shared network.
-echo "[5/5] Starting the API..."
-(cd backend && python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000) &
+echo "[6/6] Starting the API..."
+(cd backend && "$PY" -m uvicorn main:app --reload --host 127.0.0.1 --port 8000) &
 API_PID=$!
 
 # Kill the API (and the UI, if started) on Ctrl+C rather than orphaning them.

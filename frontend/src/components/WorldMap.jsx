@@ -9,9 +9,18 @@
  * x = longitude + 180 and y = 90 - latitude. Stroke widths are therefore in
  * degrees too, which is why they look tiny — the viewBox does the scaling.
  */
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 
-import { CHOKEPOINTS, project } from '../data/geography'
+import { polygonCentroid, polygonPath, project } from '../data/geography'
 import LAND_PATH from '../data/land'
 import { beaufortColor } from '../lib/domain'
 import { cx } from './ui'
@@ -169,11 +178,11 @@ function PortLayer({ ports, showLabels, scale, activePorts }) {
   )
 }
 
-function ChokepointLayer({ scale }) {
+function ChokepointLayer({ chokepoints, scale }) {
   const fontSize = Math.max(0.6, 2.1 / Math.sqrt(scale))
   return (
     <g pointerEvents="none" aria-hidden>
-      {CHOKEPOINTS.map(({ name, lat, lon }) => {
+      {chokepoints.map(({ name, lat, lon }) => {
         const [x, y] = project([lat, lon])
         return (
           <g key={name}>
@@ -204,46 +213,80 @@ function ChokepointLayer({ scale }) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Emission control areas                                                      */
+/* -------------------------------------------------------------------------- */
+/**
+ * MARPOL Annex VI zones. Inside one, fuel sulphur is capped at 0.10%, so a
+ * ship on residual fuel has to switch to distillate — which is why the two
+ * European lanes are the expensive ones for a dirty fleet.
+ *
+ * Outlines are indicative, as the API says when it serves them. Drawn under
+ * the lanes so a route stays legible crossing one.
+ */
+const EcaLayer = memo(function EcaLayer({ zones, scale, showLabels = true }) {
+  const fontSize = Math.max(0.8, 3.0 / Math.sqrt(scale))
+  return (
+    <g pointerEvents="none">
+      {zones.map((zone) => {
+        const d = polygonPath(zone.polygon)
+        if (!d) return null
+        const centre = polygonCentroid(zone.polygon)
+        return (
+          <g key={zone.short_name}>
+            <path
+              d={d}
+              fill="#f97316"
+              fillOpacity={0.1}
+              stroke="#fb923c"
+              strokeWidth={0.16}
+              strokeDasharray="1.4 1"
+              strokeOpacity={0.75}
+            />
+            {showLabels && centre && (
+              <text
+                x={centre[0]}
+                y={centre[1]}
+                textAnchor="middle"
+                fontSize={fontSize}
+                fill="#fdba74"
+                fillOpacity={0.85}
+                stroke="rgb(var(--map-ocean))"
+                strokeWidth={fontSize * 0.12}
+                paintOrder="stroke"
+                style={{ fontWeight: 600, letterSpacing: '0.04em' }}
+              >
+                {zone.short_name}
+              </text>
+            )}
+          </g>
+        )
+      })}
+    </g>
+  )
+})
+
+/* -------------------------------------------------------------------------- */
 /* Pan and zoom                                                                */
 /* -------------------------------------------------------------------------- */
 /**
- * viewBox-based pan/zoom.
+ * Shared viewport state.
  *
- * Pointer events are used rather than mouse events so the map works on a
- * touchscreen, which matters when the judges want to drive it themselves.
+ * Deliberately owns the viewBox and nothing else. The split-screen comparison
+ * puts two maps on one viewport so they pan and zoom together, which means
+ * anything measured in pixels — the element rect, its width — belongs to the
+ * individual map, not to the shared state. Keeping the DOM ref here was a bug:
+ * the second map to mount overwrote the first, so vessel markers were sized
+ * from the wrong element and dragging the left pane computed its offset from
+ * the right pane's rectangle.
  */
 export function useMapViewport(initialBox, { minSpan = 6, maxSpan = 360 } = {}) {
   const [box, setBox] = useState(initialBox)
-  const svgRef = useRef(null)
-  const dragRef = useRef(null)
 
   const reset = useCallback((next) => setBox(next ?? initialBox), [initialBox])
 
-  /** Convert a client point to map units using the current viewBox. */
-  const toMap = useCallback(
-    (clientX, clientY) => {
-      const svg = svgRef.current
-      if (!svg) return null
-      const rect = svg.getBoundingClientRect()
-      const [bx, by, bw, bh] = box
-      // The SVG uses preserveAspectRatio="xMidYMid meet", so the drawn area is
-      // letterboxed inside the element; account for that or the cursor drifts.
-      const scale = Math.min(rect.width / bw, rect.height / bh)
-      const drawnW = bw * scale
-      const drawnH = bh * scale
-      const offsetX = (rect.width - drawnW) / 2
-      const offsetY = (rect.height - drawnH) / 2
-      return [
-        bx + (clientX - rect.left - offsetX) / scale,
-        by + (clientY - rect.top - offsetY) / scale,
-      ]
-    },
-    [box],
-  )
-
-  const zoomAt = useCallback(
-    (factor, clientX, clientY) => {
-      const anchor = toMap(clientX, clientY)
+  /** Zoom about a point given in map units. */
+  const zoomAtPoint = useCallback(
+    (factor, anchor) => {
       setBox(([bx, by, bw, bh]) => {
         const nextW = Math.min(maxSpan, Math.max(minSpan, bw * factor))
         const k = nextW / bw
@@ -253,19 +296,79 @@ export function useMapViewport(initialBox, { minSpan = 6, maxSpan = 360 } = {}) 
         return [ax - (ax - bx) * k, ay - (ay - by) * k, nextW, nextH]
       })
     },
-    [toMap, minSpan, maxSpan],
+    [minSpan, maxSpan],
+  )
+
+  /** Zoom about the centre of the current view — what a button should do. */
+  const zoomBy = useCallback(
+    (factor) =>
+      setBox(([bx, by, bw, bh]) => {
+        const nextW = Math.min(maxSpan, Math.max(minSpan, bw * factor))
+        const k = nextW / bw
+        const nextH = bh * k
+        return [bx + (bw - nextW) / 2, by + (bh - nextH) / 2, nextW, nextH]
+      }),
+    [minSpan, maxSpan],
+  )
+
+  const scale = 360 / box[2]
+
+  return { box, setBox, reset, zoomAtPoint, zoomBy, scale }
+}
+
+/**
+ * Everything about one rendered map that is measured in pixels.
+ *
+ * Each map instance has its own element, so each gets its own observer and its
+ * own pointer handlers, even when several share a viewport.
+ */
+function useMapElement(viewport) {
+  const { box, setBox, zoomAtPoint } = viewport
+  const svgRef = useRef(null)
+  const dragRef = useRef(null)
+  const [pixelWidth, setPixelWidth] = useState(1000)
+
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg || typeof ResizeObserver === 'undefined') return undefined
+    const observer = new ResizeObserver(([entry]) => {
+      const { width } = entry.contentRect
+      if (width > 0) setPixelWidth(width)
+    })
+    observer.observe(svg)
+    return () => observer.disconnect()
+  }, [])
+
+  /** Client point to map units, for this element's own rectangle. */
+  const toMap = useCallback(
+    (clientX, clientY) => {
+      const svg = svgRef.current
+      if (!svg) return null
+      const rect = svg.getBoundingClientRect()
+      const [bx, by, bw, bh] = box
+      // preserveAspectRatio letterboxes the drawn area inside the element;
+      // ignore that and the cursor drifts away from the point it grabbed.
+      const scale = Math.min(rect.width / bw, rect.height / bh)
+      const offsetX = (rect.width - bw * scale) / 2
+      const offsetY = (rect.height - bh * scale) / 2
+      return [
+        bx + (clientX - rect.left - offsetX) / scale,
+        by + (clientY - rect.top - offsetY) / scale,
+      ]
+    },
+    [box],
   )
 
   const onWheel = useCallback(
     (event) => {
       event.preventDefault()
-      zoomAt(Math.exp(event.deltaY * 0.0016), event.clientX, event.clientY)
+      zoomAtPoint(Math.exp(event.deltaY * 0.0016), toMap(event.clientX, event.clientY))
     },
-    [zoomAt],
+    [zoomAtPoint, toMap],
   )
 
   // React attaches wheel listeners passively, which makes preventDefault a
-  // no-op and lets the page scroll instead of the map zooming.
+  // no-op and scrolls the page instead of zooming the map.
   useEffect(() => {
     const svg = svgRef.current
     if (!svg) return undefined
@@ -280,8 +383,8 @@ export function useMapViewport(initialBox, { minSpan = 6, maxSpan = 360 } = {}) 
       if (!svg) return
       const rect = svg.getBoundingClientRect()
       const [, , bw, bh] = box
-      // Pixels-per-map-unit at drag start. Held fixed for the whole drag, so
-      // panning stays 1:1 with the pointer instead of accelerating.
+      // Pixels-per-map-unit fixed for the whole drag, so panning tracks the
+      // pointer 1:1 instead of accelerating as the view changes.
       const unitsPerPixel = 1 / Math.min(rect.width / bw, rect.height / bh)
       dragRef.current = { clientX: event.clientX, clientY: event.clientY, box, unitsPerPixel }
       event.currentTarget.setPointerCapture?.(event.pointerId)
@@ -289,39 +392,44 @@ export function useMapViewport(initialBox, { minSpan = 6, maxSpan = 360 } = {}) 
     [box],
   )
 
-  const onPointerMove = useCallback((event) => {
-    const drag = dragRef.current
-    if (!drag) return
-    const [bx, by, bw, bh] = drag.box
-    const dx = (event.clientX - drag.clientX) * drag.unitsPerPixel
-    const dy = (event.clientY - drag.clientY) * drag.unitsPerPixel
-    setBox([bx - dx, by - dy, bw, bh])
-  }, [])
+  const onPointerMove = useCallback(
+    (event) => {
+      const drag = dragRef.current
+      if (!drag) return
+      const [bx, by, bw, bh] = drag.box
+      setBox([
+        bx - (event.clientX - drag.clientX) * drag.unitsPerPixel,
+        by - (event.clientY - drag.clientY) * drag.unitsPerPixel,
+        bw,
+        bh,
+      ])
+    },
+    [setBox],
+  )
 
   const endDrag = useCallback((event) => {
     dragRef.current = null
     event.currentTarget.releasePointerCapture?.(event.pointerId)
   }, [])
 
-  // Rendered size, so callers can keep vessel markers a constant number of
-  // pixels tall however far the map is zoomed.
-  const [pixelWidth, setPixelWidth] = useState(1000)
-  useEffect(() => {
-    const svg = svgRef.current
-    if (!svg || typeof ResizeObserver === 'undefined') return undefined
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect
-      if (width > 0 && height > 0) setPixelWidth(width)
-    })
-    observer.observe(svg)
-    return () => observer.disconnect()
-  }, [])
+  return {
+    svgRef,
+    handlers: { onPointerDown, onPointerMove, onPointerUp: endDrag, onPointerLeave: endDrag },
+    pxPerUnit: pixelWidth / box[2],
+  }
+}
 
-  const handlers = { onPointerDown, onPointerMove, onPointerUp: endDrag, onPointerLeave: endDrag }
-  const scale = 360 / box[2]
-  const pxPerUnit = pixelWidth / box[2]
+/**
+ * Pixels per map unit for the enclosing map.
+ *
+ * Passed by context rather than as a prop because the things that need it —
+ * the vessel layer, mainly — are handed to `WorldMap` as children, and a map
+ * cannot inject props into JSX it was given.
+ */
+const MapMetricsContext = createContext({ pxPerUnit: 8 })
 
-  return { box, setBox, reset, svgRef, handlers, scale, pxPerUnit, zoomAt }
+export function useMapMetrics() {
+  return useContext(MapMetricsContext)
 }
 
 /* -------------------------------------------------------------------------- */
@@ -332,18 +440,23 @@ export default function WorldMap({
   lanes = [],
   geometries = {},
   ports = [],
+  chokepoints = [],
+  ecaZones = [],
   activeLanes,
   activePorts,
   showPortLabels = true,
   showChokepoints = true,
   showGraticule = true,
+  showEca = false,
   laneColorBy = 'uniform',
   paused = false,
   onSelectLane,
   className,
   children,
 }) {
-  const { box, svgRef, handlers, scale } = viewport
+  const { box, scale } = viewport
+  const { svgRef, handlers, pxPerUnit } = useMapElement(viewport)
+  const metrics = useMemo(() => ({ pxPerUnit }), [pxPerUnit])
 
   return (
     <svg
@@ -371,6 +484,7 @@ export default function WorldMap({
       <rect x={-720} y={-180} width={1800} height={540} fill="rgb(var(--map-ocean))" />
       {showGraticule && <Graticule />}
       <Land />
+      {showEca && ecaZones.length > 0 && <EcaLayer zones={ecaZones} scale={scale} />}
       <LaneLayer
         lanes={lanes}
         geometries={geometries}
@@ -379,9 +493,11 @@ export default function WorldMap({
         paused={paused}
         onSelectLane={onSelectLane}
       />
-      {showChokepoints && <ChokepointLayer scale={scale} />}
+      {showChokepoints && chokepoints.length > 0 && (
+        <ChokepointLayer chokepoints={chokepoints} scale={scale} />
+      )}
       <PortLayer ports={ports} showLabels={showPortLabels} scale={scale} activePorts={activePorts} />
-      {children}
+      <MapMetricsContext.Provider value={metrics}>{children}</MapMetricsContext.Provider>
     </svg>
   )
 }

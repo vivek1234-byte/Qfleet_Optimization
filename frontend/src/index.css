@@ -246,3 +246,51 @@
     letter-spacing: -0.01em;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Sign-in
+   Its own small set of primitives rather than the dashboard's: the login
+   screen wants tighter labels and a full-width button, and reaching for the
+   shared Button here would have meant widening its API for one caller.
+   ------------------------------------------------------------------------ */
+@layer components {
+  .auth-label {
+    @apply mb-1.5 block text-xs font-medium uppercase tracking-[0.08em];
+    color: rgb(var(--text-secondary));
+  }
+
+  .auth-error {
+    @apply mt-1.5 text-xs;
+    color: theme('colors.rose.600');
+  }
+
+  .dark .auth-error {
+    color: theme('colors.rose.400');
+  }
+
+  .auth-button-primary,
+  .auth-button-secondary {
+    @apply flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium transition-colors;
+    @apply disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .auth-button-primary {
+    @apply bg-primary-700 text-white;
+  }
+
+  .auth-button-primary:hover:not(:disabled) {
+    @apply bg-primary-800;
+  }
+
+  .auth-button-secondary {
+    @apply border;
+    background-color: rgb(var(--surface-card));
+    border-color: rgb(var(--border-strong));
+    color: rgb(var(--text-primary));
+  }
+
+  .auth-button-secondary:hover:not(:disabled) {
+    background-color: rgb(var(--surface-sunken));
+    border-color: theme('colors.primary.400');
+  }
+}

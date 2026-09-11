@@ -192,7 +192,7 @@ export function Select({ label, hint, error, options = [], className, children, 
   )
 }
 
-export function RangeInput({ label, value, unit = '%', className, ...props }) {
+export function RangeInput({ label, value, unit = '%', displayValue, className, ...props }) {
   const id = useId()
   return (
     <div className={className}>
@@ -200,9 +200,15 @@ export function RangeInput({ label, value, unit = '%', className, ...props }) {
         <label className="field-label mb-0" htmlFor={id}>
           {label}
         </label>
+        {/* `displayValue` is for sliders whose extreme means something other
+            than its number — "no cap" rather than "22 kn". */}
         <span className="numeric text-sm font-semibold text-primary-600 dark:text-primary-400">
-          {value}
-          {unit}
+          {displayValue ?? (
+            <>
+              {value}
+              {unit}
+            </>
+          )}
         </span>
       </div>
       <input
