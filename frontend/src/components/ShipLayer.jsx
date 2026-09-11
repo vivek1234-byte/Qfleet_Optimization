@@ -9,6 +9,7 @@
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
+import { useMapMetrics } from './WorldMap'
 import { positionAt, trailPath } from '../data/geography'
 import { fuelColor, vesselDeck, vesselShape } from '../lib/domain'
 
@@ -69,6 +70,8 @@ export function snapshotShip(ship, hours) {
     laneName: ship.laneName,
     speedKnots: ship.speedKnots,
     shorePowerPct: ship.shorePowerPct,
+    ecaFraction: ship.ecaFraction ?? 0,
+    cii: ship.cii ?? null,
     berthed: state.berthed,
     inbound: state.inbound,
     progressPct: state.progress * 100,
@@ -180,7 +183,6 @@ export default function ShipLayer({
   clockRef,
   running,
   timeScale,
-  pxPerUnit,
   selectedId,
   dimmedIds,
   showTrails = true,
@@ -189,6 +191,10 @@ export default function ShipLayer({
   onTick,
   tickIntervalMs = 250,
 }) {
+  // Sized from the enclosing map's own element, which matters when two maps
+  // share one viewport in the split comparison.
+  const { pxPerUnit } = useMapMetrics()
+
   const nodesRef = useRef(new Map())
   // Ref callbacks run at commit, never during render, so mutating the map here
   // is safe. Memoised so React does not detach and re-attach every node on

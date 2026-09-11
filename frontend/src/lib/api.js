@@ -17,6 +17,36 @@ export const http = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+/* -------------------------------------------------------------------------- */
+/* Authentication                                                              */
+/* -------------------------------------------------------------------------- */
+/**
+ * The session token is injected rather than imported.
+ *
+ * `lib/auth.js` registers these at load. Done the other way round — this
+ * module importing the session store — the two would import each other, and
+ * whichever happened to evaluate first would see the other half-built.
+ */
+let tokenProvider = () => null
+let unauthorizedHandler = () => {}
+
+export function setAuthTokenProvider(fn) {
+  tokenProvider = typeof fn === 'function' ? fn : () => null
+}
+
+export function setUnauthorizedHandler(fn) {
+  unauthorizedHandler = typeof fn === 'function' ? fn : () => {}
+}
+
+http.interceptors.request.use((config) => {
+  const token = tokenProvider()
+  if (token && !config.headers?.Authorization) {
+    config.headers = config.headers ?? {}
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
 /** An error that carries the backend's error code and per-field details. */
 export class ApiError extends Error {
   constructor(message, { code, status, fields, details } = {}) {
@@ -79,16 +109,53 @@ function normaliseError(error) {
 
 http.interceptors.response.use(
   (response) => response,
-  (error) => Promise.reject(normaliseError(error)),
+  (error) => {
+    const normalised = normaliseError(error)
+    // An expired token or a deactivated account: tell the session store, so
+    // the guard sends the user to sign in with a reason instead of leaving
+    // them on a page whose every request quietly fails.
+    if (normalised.status === 401 && !error.config?.skipAuthRedirect) {
+      unauthorizedHandler(normalised.message)
+    }
+    return Promise.reject(normalised)
+  },
 )
 
 const get = (url, config) => http.get(url, config).then((r) => r.data)
 const post = (url, body, config) => http.post(url, body, config).then((r) => r.data)
 const put = (url, body, config) => http.put(url, body, config).then((r) => r.data)
 
+const del = (url, config) => http.delete(url, config).then((r) => r.data)
+
 export const api = {
   health: (config) => get('/api/health', config),
   root: (config) => get('/', config),
+
+  auth: {
+    // `skipAuthRedirect`: a 401 here means "those credentials are wrong",
+    // not "your session ended", and must not trigger the expiry handler.
+    login: (body, config) => post('/api/auth/login', body, { skipAuthRedirect: true, ...config }),
+    me: (config) => get('/api/auth/me', config),
+    logout: (config) => post('/api/auth/logout', null, config),
+    changePassword: (body, config) =>
+      post('/api/auth/change-password', body, { skipAuthRedirect: true, ...config }),
+  },
+
+  /**
+   * Employee administration. Every one of these is ADMIN-only *on the
+   * server*; hiding the page from other roles is a courtesy, not the check.
+   */
+  admin: {
+    employees: (params, config) => get('/api/admin/employees', { params, ...config }),
+    employee: (id, config) => get(`/api/admin/employees/${id}`, config),
+    createEmployee: (body, config) => post('/api/admin/employees', body, config),
+    updateEmployee: (id, body, config) => put(`/api/admin/employees/${id}`, body, config),
+    activate: (id, config) => post(`/api/admin/employees/${id}/activate`, null, config),
+    deactivate: (id, config) => post(`/api/admin/employees/${id}/deactivate`, null, config),
+    resetPassword: (id, body, config) =>
+      post(`/api/admin/employees/${id}/reset-password`, body, config),
+    deleteEmployee: (id, config) => del(`/api/admin/employees/${id}`, config),
+  },
 
   optimization: {
     algorithms: (config) => get('/api/optimization/algorithms', config),
@@ -115,6 +182,14 @@ export const api = {
     metricsGuide: (config) => get('/api/benchmarks/metrics-guide', config),
   },
 
+  regulatory: {
+    ecaZones: (config) => get('/api/regulatory/eca-zones', config),
+    routes: (config) => get('/api/regulatory/routes', config),
+    ciiReference: (params, config) => get('/api/regulatory/cii-reference', { params, ...config }),
+    rate: (body, config) => post('/api/regulatory/cii', body, config),
+    seasonality: (params, config) => get('/api/regulatory/seasonality', { params, ...config }),
+  },
+
   scenarios: {
     fuels: (config) => get('/api/scenarios/fuels', config),
     fleet: (config) => get('/api/scenarios/fleet', config),
@@ -124,6 +199,63 @@ export const api = {
     shorePower: (body, config) => post('/api/scenarios/shore-power', body, config),
     transitionPlan: (body, config) => post('/api/scenarios/transition-plan', body, config),
   },
+}
+
+/**
+ * Watch an optimisation converge over server-sent events.
+ *
+ * `EventSource` only speaks GET, which is why the streaming endpoint takes
+ * query parameters rather than a body. Returns a `close` function; call it on
+ * unmount or the browser keeps the connection — and the solver thread —
+ * alive after the user has navigated away.
+ */
+export function streamOptimization(params, { onStart, onProgress, onDone, onError } = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== null && value !== undefined && value !== '') query.set(key, String(value))
+  })
+
+  const source = new EventSource(`${baseURL}/api/optimization/stream?${query}`)
+  let settled = false
+
+  const close = () => {
+    settled = true
+    source.close()
+  }
+
+  const parse = (handler) => (event) => {
+    if (!handler) return
+    try {
+      handler(JSON.parse(event.data))
+    } catch {
+      // A malformed frame is not worth tearing the stream down for.
+    }
+  }
+
+  source.addEventListener('start', parse(onStart))
+  source.addEventListener('progress', parse(onProgress))
+  source.addEventListener('done', (event) => {
+    settled = true
+    parse(onDone)(event)
+    source.close()
+  })
+  source.addEventListener('error', (event) => {
+    // Two different things arrive on this name: our own `error` event, which
+    // carries a JSON payload, and the browser's transport error, which does
+    // not. Only the latter means the connection itself failed.
+    if (event.data) {
+      settled = true
+      parse(onError)(event)
+      source.close()
+      return
+    }
+    if (settled) return
+    settled = true
+    source.close()
+    onError?.({ code: 'NETWORK', message: 'Lost the connection to the solver stream.' })
+  })
+
+  return close
 }
 
 export default api

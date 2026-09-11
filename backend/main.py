@@ -67,6 +67,45 @@ async def lifespan(app: FastAPI):
             "dataset missing at %s — run `python -m data.generator` to create it",
             settings.DEFAULT_DATASET,
         )
+
+    # Accounts. A missing or empty employees table is not fatal — the rest of
+    # the API still works — but nobody can sign in, so say so loudly rather
+    # than letting the first person discover it at the login screen.
+    try:
+        from db import Employee
+        from db.session import get_sessionmaker
+        from sqlalchemy import func, select
+
+        with get_sessionmaker()() as session:
+            total = session.scalar(select(func.count()).select_from(Employee)) or 0
+            admins = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(Employee)
+                    .where(Employee.role == "ADMIN", Employee.is_active.is_(True))
+                )
+                or 0
+            )
+        if total == 0:
+            logger.warning(
+                "no employee accounts exist — run `python -m backend.manage seed` "
+                "(demo data) or `python -m backend.manage bootstrap` (first admin)"
+            )
+        elif admins == 0:
+            logger.warning(
+                "no active administrator — run `python -m backend.manage bootstrap` "
+                "to create one, or employee management is unreachable"
+            )
+        else:
+            logger.info("accounts ready: %d employees, %d active administrators", total, admins)
+    except Exception as exc:  # pragma: no cover - startup diagnostics only
+        logger.warning(
+            "accounts database unavailable (%s: %s) — sign-in will fail until "
+            "`alembic upgrade head` has been run",
+            type(exc).__name__,
+            exc,
+        )
+
     yield
     logger.info("shutting down")
 
@@ -194,15 +233,21 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
+from admin.api import router as admin_router  # noqa: E402
+from auth.api import router as auth_router  # noqa: E402
 from benchmarking.api import router as benchmarking_router  # noqa: E402
 from optimization.api import router as optimization_router  # noqa: E402
 from prediction.api import router as prediction_router  # noqa: E402
+from regulatory.api import router as regulatory_router  # noqa: E402
 from scenario.api import router as scenario_router  # noqa: E402
 
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(optimization_router)
 app.include_router(benchmarking_router)
 app.include_router(prediction_router)
 app.include_router(scenario_router)
+app.include_router(regulatory_router)
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +262,8 @@ async def root() -> Dict[str, Any]:
         "docs": "/docs",
         "endpoints": {
             "health": "/api/health",
+            "auth": "/api/auth",
+            "admin": "/api/admin",
             "optimization": "/api/optimization",
             "benchmarks": "/api/benchmarks",
             "prediction": "/api/prediction",
@@ -232,11 +279,40 @@ async def health_check() -> Dict[str, Any]:
 
     model_ready = predictor.model is not None and predictor.is_fitted
     dataset_ready = settings.DEFAULT_DATASET.exists()
+
+    # Accounts. Reported without ever including the database URL, which can
+    # carry a password.
+    accounts_ok = False
+    accounts_detail = "not initialised"
+    try:
+        from db import Employee
+        from db.session import get_sessionmaker
+        from sqlalchemy import func, select
+
+        with get_sessionmaker()() as session:
+            admins = (
+                session.scalar(
+                    select(func.count())
+                    .select_from(Employee)
+                    .where(Employee.role == "ADMIN", Employee.is_active.is_(True))
+                )
+                or 0
+            )
+        accounts_ok = admins > 0
+        accounts_detail = (
+            f"{admins} active administrator{'s' if admins != 1 else ''}"
+            if accounts_ok
+            else "no active administrator; run python -m backend.manage bootstrap"
+        )
+    except Exception as exc:  # pragma: no cover - health reporting only
+        accounts_detail = f"{type(exc).__name__}; run alembic upgrade head"
+
     return {
-        "status": "healthy" if model_ready and dataset_ready else "degraded",
+        "status": "healthy" if model_ready and dataset_ready and accounts_ok else "degraded",
         "version": settings.VERSION,
         "checks": {
             "api": {"ok": True},
+            "accounts": {"ok": accounts_ok, "detail": accounts_detail},
             "prediction_model": {
                 "ok": model_ready,
                 "detail": (

@@ -10,12 +10,46 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
+
+# Generated on first use when QGF_JWT_SECRET is unset. See Settings.jwt_secret_resolved.
+_EPHEMERAL_JWT_SECRET: Optional[str] = None
+
+
+def _load_dotenv() -> None:
+    """
+    Read PROJECT_ROOT/.env into the environment, if it exists.
+
+    Real values live in .env, which is git-ignored; .env.example documents the
+    keys with placeholders. Existing environment variables always win, so a
+    value exported by the shell or the container is never overwritten by a
+    file left over on someone's laptop.
+    """
+    path = PROJECT_ROOT / ".env"
+    try:
+        if not path.is_file():
+            return
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except OSError:
+        # An unreadable .env is not worth failing startup over; defaults apply.
+        pass
+
+
+_load_dotenv()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -83,9 +117,48 @@ class Settings:
     # ---- prediction ------------------------------------------------------
     MAX_PREDICT_BATCH: int = _env_int("QGF_MAX_PREDICT_BATCH", 500)
 
+    # ---- accounts database ------------------------------------------------
+    # SQLite by default: the platform has to start from start.bat on a laptop
+    # with no server running and possibly no network. Any SQLAlchemy URL works,
+    # so switching to PostgreSQL is one environment variable:
+    #   QGF_DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/qfleet
+    # Credentials live in the environment, never in code or in the frontend.
+    DATABASE_URL: str = os.getenv(
+        "QGF_DATABASE_URL",
+        f"sqlite:///{(BASE_DIR / 'data' / 'qfleet.db').as_posix()}",
+    )
+    DB_ECHO: bool = _env_bool("QGF_DB_ECHO", False)
+
+    # ---- authentication ---------------------------------------------------
+    # The signing key MUST be set in production. Left unset, a random key is
+    # generated per process, which is safe but logs every user out on restart.
+    JWT_SECRET: str = os.getenv("QGF_JWT_SECRET", "")
+    JWT_ALGORITHM: str = os.getenv("QGF_JWT_ALGORITHM", "HS256")
+    JWT_EXPIRE_MINUTES: int = _env_int("QGF_JWT_EXPIRE_MINUTES", 720)  # 12 hours
+    # bcrypt work factor. 12 is the usual production floor; lower it only for
+    # tests, where hashing hundreds of passwords at 12 rounds is the slowest
+    # thing in the suite.
+    BCRYPT_ROUNDS: int = _env_int("QGF_BCRYPT_ROUNDS", 12)
+    PASSWORD_MIN_LENGTH: int = _env_int("QGF_PASSWORD_MIN_LENGTH", 8)
+
     @property
     def allowed_dataset_dir(self) -> Path:
         return self.DATASET_DIR
+
+    @property
+    def jwt_secret_resolved(self) -> str:
+        """The signing key, falling back to a per-process random one."""
+        if self.JWT_SECRET:
+            return self.JWT_SECRET
+        global _EPHEMERAL_JWT_SECRET
+        if _EPHEMERAL_JWT_SECRET is None:
+            _EPHEMERAL_JWT_SECRET = secrets.token_urlsafe(48)
+            logging.getLogger(__name__).warning(
+                "QGF_JWT_SECRET is not set: using a random key for this process. "
+                "Sessions will not survive a restart. Set QGF_JWT_SECRET in .env "
+                "before deploying."
+            )
+        return _EPHEMERAL_JWT_SECRET
 
 
 @lru_cache(maxsize=1)

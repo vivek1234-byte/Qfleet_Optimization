@@ -63,3 +63,30 @@ class UnsupportedError(AppError):
 class ComputationError(AppError):
     status_code = 500
     code = "COMPUTATION_FAILED"
+
+
+class AuthenticationError(AppError):
+    """
+    Not signed in, or the credentials given are not good enough.
+
+    Callers must keep the message generic. Telling an attacker that an
+    Employee ID exists but the password is wrong hands them half the
+    credential; ``auth.api`` returns the same text either way.
+    """
+
+    status_code = 401
+    code = "UNAUTHENTICATED"
+
+
+class PermissionError_(AppError):
+    """Signed in, but not allowed to do this."""
+
+    status_code = 403
+    code = "FORBIDDEN"
+
+
+class ConflictError(AppError):
+    """The request is well formed but collides with what is already stored."""
+
+    status_code = 409
+    code = "CONFLICT"

@@ -19,12 +19,17 @@ import urllib.request
 BASE = "http://127.0.0.1:8100"
 PASS, FAIL, SKIP = [], [], []
 
+# The seeded demo administrator. Override with --admin-id / --admin-password
+# when running against a server whose accounts are real.
+ADMIN_ID = "EMP001"
+ADMIN_PASSWORD = "Admin@12345"
 
-def call(method, path, body=None, timeout=180):
+
+def call(method, path, body=None, timeout=180, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(
         BASE + path, data=data, method=method,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
     )
     started = time.perf_counter()
     try:
@@ -40,12 +45,20 @@ def call(method, path, body=None, timeout=180):
         return 0, f"{type(e).__name__}: {e}", time.perf_counter() - started
 
 
-def check(name, method, path, *, body=None, expect=200, assertions=(), timeout=180):
-    status, payload, elapsed = call(method, path, body, timeout)
+def check(name, method, path, *, body=None, expect=200, assertions=(), timeout=180, headers=None):
+    """
+    ``expect`` accepts either one status or a set of acceptable ones, for the
+    handful of endpoints whose correct answer depends on whether anything has
+    been run yet. Asserting a single status there makes the suite pass only on
+    a cold server, which is a flaky test rather than a strict one.
+    """
+    status, payload, elapsed = call(method, path, body, timeout, headers)
+    allowed = expect if isinstance(expect, (set, frozenset, tuple, list)) else {expect}
     problems = []
-    if status != expect:
+    if status not in allowed:
         detail = payload if isinstance(payload, str) else json.dumps(payload)[:200]
-        problems.append(f"expected HTTP {expect}, got {status} — {detail}")
+        wanted = " or ".join(str(s) for s in sorted(allowed))
+        problems.append(f"expected HTTP {wanted}, got {status} — {detail}")
     else:
         for label, fn in assertions:
             try:
@@ -65,6 +78,81 @@ def check(name, method, path, *, body=None, expect=200, assertions=(), timeout=1
     return payload
 
 
+def check_inline(name, condition, detail=""):
+    """Assert something derived from two earlier responses."""
+    if condition:
+        PASS.append((name, 0.0))
+        print(f"  ok    {'--':4s} {'(derived)':42s} {0.0:6.2f}s  {name}")
+    else:
+        FAIL.append((name, "--", "(derived)", [detail or "condition was false"]))
+        print(f"  FAIL  {'--':4s} {'(derived)':42s} {0.0:6.2f}s")
+        print(f"        └─ {detail or 'condition was false'}")
+
+
+def stream_check(timeout=120):
+    """
+    Consume the server-sent event stream and check its shape.
+
+    A streaming endpoint can return 200 and then produce nothing useful, so
+    this asserts on the frames themselves: a start, one progress event per
+    iteration in order, and a terminal done carrying a real plan.
+    """
+    iterations = 20
+    path = (
+        "/api/optimization/stream?algorithm=qpso&n_vessels=6&n_routes=4"
+        f"&max_iterations={iterations}&population_size=20&seed=42&month=7"
+    )
+    started = time.time()
+    events, event_name = [], None
+    try:
+        with urllib.request.urlopen(BASE + path, timeout=timeout) as response:
+            content_type = response.headers.get("Content-Type", "")
+            for raw in response:
+                line = raw.decode("utf-8").rstrip("\n")
+                if line.startswith("event: "):
+                    event_name = line[7:]
+                elif line.startswith("data: "):
+                    events.append((event_name, json.loads(line[6:])))
+                    if event_name in ("done", "error"):
+                        break
+    except Exception as exc:
+        FAIL.append(("solver stream", "GET", "/api/optimization/stream", [f"{type(exc).__name__}: {exc}"]))
+        print(f"  FAIL  GET  {'/api/optimization/stream':42s}")
+        print(f"        └─ {type(exc).__name__}: {exc}")
+        return
+
+    elapsed = time.time() - started
+    kinds = [name for name, _ in events]
+    progress = [payload for name, payload in events if name == "progress"]
+    terminal = events[-1] if events else (None, {})
+
+    problems = []
+    if "text/event-stream" not in content_type:
+        problems.append(f"wrong content type: {content_type}")
+    if not kinds or kinds[0] != "start":
+        problems.append(f"first frame was {kinds[0] if kinds else 'nothing'}, not start")
+    if len(progress) != iterations:
+        problems.append(f"{len(progress)} progress frames for {iterations} iterations")
+    if [p["iteration"] for p in progress] != list(range(1, len(progress) + 1)):
+        problems.append("progress iterations are not sequential from 1")
+    if terminal[0] != "done":
+        problems.append(f"stream ended on {terminal[0]}, not done")
+    elif not terminal[1].get("plan", {}).get("assignments"):
+        problems.append("done frame carried no deployment plan")
+    elif terminal[1]["plan"]["season"]["month"] != 7:
+        problems.append("the month parameter did not reach the solver")
+
+    if problems:
+        FAIL.append(("solver stream", "GET", "/api/optimization/stream", problems))
+        print(f"  FAIL  GET  {'/api/optimization/stream':42s} {elapsed:6.2f}s")
+        for problem in problems:
+            print(f"        └─ {problem}")
+    else:
+        PASS.append(("solver stream", elapsed))
+        print(f"  ok    GET  {'/api/optimization/stream':42s} {elapsed:6.2f}s  "
+              f"{len(progress)} progress frames then done")
+
+
 # ---------------------------------------------------------------------------
 VOYAGE = {
     "vessel_type": "Container", "dwt": 120000, "engine_power_kw": 35000,
@@ -79,10 +167,17 @@ def has(*keys):
 
 
 def main() -> int:
-    global BASE
+    global BASE, ADMIN_ID, ADMIN_PASSWORD
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default=BASE)
-    BASE = ap.parse_args().base.rstrip("/")
+    ap.add_argument("--admin-id", default=ADMIN_ID,
+                    help="Employee ID for the authentication checks")
+    ap.add_argument("--admin-password", default=ADMIN_PASSWORD,
+                    help="Its password. Defaults to the seeded demo password.")
+    args = ap.parse_args()
+    BASE = args.base.rstrip("/")
+    ADMIN_ID = args.admin_id
+    ADMIN_PASSWORD = args.admin_password
 
     print(f"\nTesting {BASE}\n" + "=" * 78)
 
@@ -93,7 +188,7 @@ def main() -> int:
         ("lists endpoints", has("endpoints", "version")),
     ])
     health = check("health", "GET", "/api/health", assertions=[
-        ("has checks", lambda d: set(d["checks"]) == {"api", "prediction_model", "dataset"}),
+        ("has checks", lambda d: set(d["checks"]) == {"api", "accounts", "prediction_model", "dataset"}),
         ("status healthy", lambda d: d["status"] == "healthy"),
     ])
     check("openapi schema", "GET", "/openapi.json", assertions=[
@@ -101,6 +196,101 @@ def main() -> int:
     ])
 
     model_ready = bool(health and health.get("checks", {}).get("prediction_model", {}).get("ok"))
+
+    # -- Authentication -----------------------------------------------------
+    # Against a live server, with the seeded demo administrator. Skipped
+    # rather than failed if those credentials do not apply — the point is to
+    # exercise the boundary, not to insist on a particular password.
+    print("\n[Authentication]")
+    check("login rejects an unknown id", "POST", "/api/auth/login", expect=401,
+          body={"employee_id": "NOSUCHEMPLOYEE", "password": "whatever12345"})
+    check("login rejects a bad password", "POST", "/api/auth/login", expect=401,
+          body={"employee_id": ADMIN_ID, "password": "definitely-not-it"})
+
+    unknown = call("POST", "/api/auth/login", {"employee_id": "NOSUCHEMPLOYEE", "password": "x" * 12})[1]
+    wrong = call("POST", "/api/auth/login", {"employee_id": ADMIN_ID, "password": "x" * 12})[1]
+    check_inline(
+        "no account enumeration",
+        unknown == wrong,
+        f"unknown id says {unknown!r}, wrong password says {wrong!r} — the difference tells an "
+        "attacker which Employee IDs exist",
+    )
+
+    check("login needs both fields", "POST", "/api/auth/login", expect=422,
+          body={"employee_id": ADMIN_ID})
+    check("/me needs a token", "GET", "/api/auth/me", expect=401)
+    check("/me rejects a junk token", "GET", "/api/auth/me", expect=401,
+          headers={"Authorization": "Bearer not-a-real-token"})
+    check("admin list needs a token", "GET", "/api/admin/employees", expect=401)
+
+    status, session, _ = call("POST", "/api/auth/login",
+                              {"employee_id": ADMIN_ID, "password": ADMIN_PASSWORD})
+    if status == 200 and isinstance(session, dict):
+        auth = {"Authorization": f"Bearer {session['access_token']}"}
+        check("administrator signs in", "POST", "/api/auth/login",
+              body={"employee_id": ADMIN_ID, "password": ADMIN_PASSWORD}, assertions=[
+                  ("bearer token", lambda d: d["token_type"] == "bearer" and d["access_token"]),
+                  ("carries the employee", lambda d: d["employee"]["employee_id"] == ADMIN_ID),
+                  ("role is ADMIN", lambda d: d["employee"]["role"] == "ADMIN"),
+                  ("no password material", lambda d: "password_hash" not in json.dumps(d)),
+              ])
+        check("/me with a token", "GET", "/api/auth/me", headers=auth, assertions=[
+            ("is the same person", lambda d: d["employee_id"] == ADMIN_ID),
+            ("no password material", lambda d: "password_hash" not in json.dumps(d)),
+        ])
+        check("admin lists employees", "GET", "/api/admin/employees", headers=auth, assertions=[
+            ("has a roster", lambda d: isinstance(d["employees"], list) and d["total"] >= 1),
+            ("counts agree", lambda d: d["total"] == len(d["employees"])),
+            ("no hash anywhere", lambda d: "password_hash" not in json.dumps(d)
+                                           and "$2b$" not in json.dumps(d)),
+        ])
+        check("search by employee id", "GET", f"/api/admin/employees?search={ADMIN_ID.lower()}",
+              headers=auth, assertions=[
+                  ("finds exactly one", lambda d: d["total"] == 1),
+              ])
+        check("duplicate id refused", "POST", "/api/admin/employees", expect=409, headers=auth,
+              body={"employee_id": ADMIN_ID, "full_name": "Impostor Person",
+                    "password": "Impostor@123"})
+        check("admin rejects a junk token", "GET", "/api/admin/employees", expect=401,
+              headers={"Authorization": "Bearer not-a-real-token"})
+        check("logout", "POST", "/api/auth/logout", headers=auth)
+
+        # An ordinary employee must be refused by the API, not just by a
+        # hidden menu item. Created, used, and removed again.
+        created = call("POST", "/api/admin/employees", {
+            "employee_id": "ZZTEST01", "full_name": "Conformance Probe",
+            "password": "Probe@1234567", "department": "QA",
+        }, headers=auth)[1]
+        if isinstance(created, dict) and created.get("id"):
+            probe = call("POST", "/api/auth/login",
+                         {"employee_id": "ZZTEST01", "password": "Probe@1234567"})[1]
+            probe_auth = {"Authorization": f"Bearer {probe['access_token']}"}
+            check("employee cannot list employees", "GET", "/api/admin/employees",
+                  expect=403, headers=probe_auth)
+            check("employee cannot create employees", "POST", "/api/admin/employees",
+                  expect=403, headers=probe_auth,
+                  body={"employee_id": "ZZTEST02", "full_name": "Escalated User",
+                        "password": "Escalate@123", "role": "ADMIN"})
+            check("employee cannot delete employees", "DELETE",
+                  f"/api/admin/employees/{created['id']}", expect=403, headers=probe_auth)
+
+            deactivated = call("POST", f"/api/admin/employees/{created['id']}/deactivate",
+                               headers=auth)[1]
+            check_inline("deactivate works",
+                         isinstance(deactivated, dict) and deactivated.get("is_active") is False,
+                         f"deactivate returned {deactivated!r}")
+            check("inactive account cannot sign in", "POST", "/api/auth/login", expect=401,
+                  body={"employee_id": "ZZTEST01", "password": "Probe@1234567"})
+            check("deactivation ends a live session", "GET", "/api/auth/me",
+                  expect=401, headers=probe_auth)
+            call("DELETE", f"/api/admin/employees/{created['id']}", headers=auth)
+        else:
+            SKIP.append(("role enforcement", "could not create the probe account"))
+            print("  skip  --    role enforcement — could not create the probe account")
+    else:
+        SKIP.append(("admin session", f"{ADMIN_ID} / seeded password did not sign in"))
+        print(f"  skip  --    admin-only checks — {ADMIN_ID} did not sign in "
+              f"(pass --admin-id / --admin-password)")
 
     # -- Optimization -------------------------------------------------------
     print("\n[Optimization]")
@@ -206,10 +396,125 @@ def main() -> int:
               body={"dataset": "voyage_data.csv", "persist": False, "test_size": 0.2},
               assertions=[("r2 > 0.9 after retrain", lambda d: d["r2"] > 0.9)], timeout=300)
 
+
+    # -- Regulatory ---------------------------------------------------------
+    print("\n[Regulatory]")
+    check("emission control areas", "GET", "/api/regulatory/eca-zones", assertions=[
+        ("five zones", lambda d: len(d["zones"]) == 5),
+        ("every zone is a closed outline", lambda d: all(len(z["polygon"]) >= 4 for z in d["zones"])),
+        ("ECA cap is 0.10%, global cap 0.50%",
+         lambda d: d["eca_sulphur_limit_pct"] == 0.10 and d["global_sulphur_cap_pct"] == 0.50),
+        ("the two European lanes are exposed", lambda d: d["affected_lane_count"] == 2),
+        ("exposure is a fraction, not a percentage",
+         lambda d: all(0 <= l["eca_fraction"] <= 1 for l in d["lanes"])),
+        ("indicative outlines are disclaimed", lambda d: "not navigational boundaries" in d["disclaimer"]),
+    ])
+    check("route geometry", "GET", "/api/regulatory/routes", assertions=[
+        ("every lane has a path", lambda d: all(len(l["points"]) >= 2 for l in d["lanes"])),
+        ("cumulative distance starts at zero",
+         lambda d: all(l["cumulative_nm"][0] == 0 for l in d["lanes"])),
+        ("one cumulative entry per point",
+         lambda d: all(len(l["cumulative_nm"]) == len(l["points"]) for l in d["lanes"])),
+        ("ports and chokepoints served", lambda d: len(d["ports"]) >= 20 and len(d["chokepoints"]) >= 6),
+    ])
+    check("CII reference lines", "GET", "/api/regulatory/cii-reference?year=2026", assertions=[
+        ("MEPC.353(78) container constants",
+         lambda d: next(t for t in d["ship_types"] if t["vessel_type"] == "Container")["a"] == 1984.0),
+        ("MEPC.354(78) tanker boundaries",
+         lambda d: next(t for t in d["ship_types"] if t["vessel_type"] == "Tanker")["dd_vector"]
+                   == [0.82, 0.93, 1.08, 1.28]),
+        ("2026 reduction factor is 11%", lambda d: d["reduction_factor_pct"] == 11.0),
+        ("every registry vessel has a required line", lambda d: len(d["vessels"]) == 20),
+        ("required is below the 2019 reference",
+         lambda d: all(v["required_cii"] < v["reference_cii"] for v in d["vessels"])),
+        ("boundaries ascend A/B < B/C < C/D < D/E",
+         lambda d: all(v["boundaries"]["A_B"] < v["boundaries"]["B_C"] < v["boundaries"]["C_D"]
+                       < v["boundaries"]["D_E"] for v in d["vessels"])),
+        ("sources cited", lambda d: any("MEPC.353" in s for s in d["sources"])),
+    ])
+    check("rate voyages", "POST", "/api/regulatory/cii",
+          body={"year": 2026, "voyages": [
+              {"vessel_name": "clean", "vessel_type": "Tanker", "dwt": 100000,
+               "co2_tons": 50, "distance_nm": 5000},
+              {"vessel_name": "dirty", "vessel_type": "Tanker", "dwt": 100000,
+               "co2_tons": 5000, "distance_nm": 5000},
+          ]},
+          assertions=[
+              ("both rated", lambda d: d["rated_count"] == 2),
+              ("the clean one beats the dirty one",
+               lambda d: "ABCDE".index(d["vessels"][0]["rating"]) < "ABCDE".index(d["vessels"][1]["rating"])),
+              ("gCO2 per dwt-nm", lambda d: d["vessels"][0]["unit"] == "gCO2 per dwt-nautical mile"),
+              ("the dirty one is flagged", lambda d: [v["vessel_name"] for v in d["at_risk"]] == ["dirty"]),
+              ("annual-vs-voyage caveat surfaced",
+               lambda d: any("annual indicator" in c for c in d["caveats"])),
+          ])
+    check("reject an unknown ship type", "POST", "/api/regulatory/cii", expect=422,
+          body={"voyages": [{"vessel_type": "Submarine", "dwt": 1000,
+                             "co2_tons": 1, "distance_nm": 1}]},
+          assertions=[("field named", lambda d: any(f["field"].endswith("vessel_type")
+                                                    for f in d["error"]["details"]["fields"]))])
+    check("seasonality", "GET", "/api/regulatory/seasonality", assertions=[
+        ("eight basins", lambda d: len(d["basins"]) == 8),
+        ("twelve months each", lambda d: all(len(b["monthly_factor"]) == 12 for b in d["basins"])),
+        ("the Arabian Sea peaks in the monsoon",
+         lambda d: next(b for b in d["basins"] if b["name"] == "Arabian Sea")["roughest_month"]
+                   in ("June", "July", "August")),
+        ("every lane profiled", lambda d: len(d["lanes"]) == 16),
+        ("basin shares sum to one",
+         lambda d: all(abs(sum(b["share"] for b in l["basins"]) - 1) < 1e-6 for l in d["lanes"])),
+        ("indicative, not measured", lambda d: "not measured data" in d["note"]),
+    ])
+    check("unknown lane rejected", "GET", "/api/regulatory/seasonality?lane=Nowhere", expect=422)
+
+    # -- Seasonal and ECA effects on the optimiser --------------------------
+    print("\n[Optimisation under regulation]")
+    july = check("optimise in the south-west monsoon", "POST", "/api/optimization/optimize",
+                 body={"n_vessels": 8, "n_routes": 5, "max_iterations": 60, "population_size": 30,
+                       "seed": 42, "month": 7},
+                 assertions=[
+                     ("month echoed", lambda d: d["problem"]["month"] == 7),
+                     ("season named", lambda d: d["plan"]["season"]["label"] == "South-west monsoon"),
+                     ("sea state raised", lambda d: d["plan"]["season"]["mean_factor"] > 1.0),
+                     ("every vessel carries a CII rating",
+                      lambda d: all(a["cii"]["rated"] for a in d["plan"]["assignments"])),
+                     ("ratings are A-E",
+                      lambda d: all(a["cii"]["rating"] in "ABCDE" for a in d["plan"]["assignments"])),
+                     ("fleet compliance summarised",
+                      lambda d: set(d["plan"]["compliance"]["cii"]["distribution"]) == set("ABCDE")),
+                     ("ECA switch fuel named",
+                      lambda d: d["plan"]["compliance"]["eca_switch_fuel"] == "MGO"),
+                 ], timeout=300)
+    march = check("optimise in the inter-monsoon", "POST", "/api/optimization/optimize",
+                  body={"n_vessels": 8, "n_routes": 5, "max_iterations": 60, "population_size": 30,
+                        "seed": 42, "month": 3},
+                  assertions=[("calmer than July",
+                               lambda d: d["plan"]["season"]["mean_factor"] < 1.0)], timeout=300)
+    if isinstance(july, dict) and isinstance(march, dict):
+        check_inline("the monsoon costs fuel",
+                     july["plan"]["objectives"]["fuel_consumption_tons"]
+                     > march["plan"]["objectives"]["fuel_consumption_tons"])
+    check("speed cap binds", "POST", "/api/optimization/optimize",
+          body={"n_vessels": 8, "n_routes": 5, "max_iterations": 60, "population_size": 30,
+                "seed": 42, "speed_cap_knots": 12},
+          assertions=[
+              ("cap echoed", lambda d: d["problem"]["speed_cap_knots"] == 12.0),
+              ("nothing exceeds the cap or its own minimum",
+               lambda d: all(a["speed_knots"] <= 16.1 for a in d["plan"]["assignments"])),
+          ], timeout=300)
+    check("reject an impossible month", "POST", "/api/optimization/optimize", expect=422,
+          body={"n_vessels": 4, "month": 13})
+
+    # -- Streaming ----------------------------------------------------------
+    print("\n[Streaming]")
+    stream_check()
+
     # -- Benchmarking -------------------------------------------------------
     print("\n[Benchmarking]")
-    check("results before any run", "GET", "/api/benchmarks/results", expect=404, assertions=[
-        ("structured error", lambda d: d["error"]["code"] == "NOT_FOUND"),
+    # 404 on a cold server, 200 if this process has already run a suite. Both
+    # are correct; what must hold is that the answer is well formed either way.
+    check("results before any run", "GET", "/api/benchmarks/results", expect={200, 404}, assertions=[
+        ("structured error or a cached report",
+         lambda d: d.get("error", {}).get("code") == "NOT_FOUND" or d.get("status") == "completed"),
     ])
     check("metrics guide", "GET", "/api/benchmarks/metrics-guide", assertions=[
         ("documented indicators", lambda d: all(has("id", "name", "direction", "description")(m) for m in d)),

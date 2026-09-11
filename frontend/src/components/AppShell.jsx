@@ -5,14 +5,15 @@
  * most common failure at a demo is the backend dying quietly while the browser
  * still shows the last good screen.
  */
-import { Menu, Moon, Sun } from 'lucide-react'
+import { LogOut, Menu, Moon, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 
 import { usePolling } from '../hooks/useApi'
 import { useTheme } from '../hooks/useTheme'
 import api from '../lib/api'
-import { NAV_ITEMS } from '../lib/nav'
+import { signOut, useSession } from '../lib/auth'
+import { NAV_ITEMS, navItemsFor } from '../lib/nav'
 import { cx } from './ui'
 
 function BackendStatus() {
@@ -42,6 +43,54 @@ function BackendStatus() {
   )
 }
 
+/** Who is signed in, and the way out. */
+function AccountBlock() {
+  const { session } = useSession()
+  const navigate = useNavigate()
+  if (!session) return null
+
+  const initials =
+    (session.name ?? '')
+      .split(' ')
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join('') || '?'
+
+  return (
+    <div className="flex items-center gap-2.5">
+      <span
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md bg-primary-600 text-[0.7rem] font-semibold text-white"
+        aria-hidden
+      >
+        {initials}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs font-medium text-slate-200">{session.name}</span>
+        {/* Employee ID and department, because in an operations room that is
+            how people are identified — the email address, if there even is
+            one, tells a colleague less. */}
+        <span className="block truncate text-[0.68rem] text-slate-500">
+          {[session.employeeId, session.role === 'ADMIN' ? 'Admin' : session.department]
+            .filter(Boolean)
+            .join(' · ') || 'Signed in'}
+        </span>
+      </span>
+      <button
+        type="button"
+        onClick={() => {
+          signOut()
+          navigate('/login', { replace: true })
+        }}
+        aria-label="Sign out"
+        title="Sign out"
+        className="shrink-0 rounded-md p-1.5 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-200"
+      >
+        <LogOut size={15} />
+      </button>
+    </div>
+  )
+}
+
 function Wordmark() {
   return (
     <div className="flex items-center gap-3 px-2 py-1">
@@ -66,11 +115,16 @@ function Wordmark() {
 }
 
 function SidebarContent({ onNavigate }) {
+  const { session } = useSession()
+  // Role-gated items. This decides what is *shown*; the API decides what is
+  // allowed. See lib/nav.js.
+  const items = navItemsFor(session?.role)
+
   return (
     <>
       <Wordmark />
       <nav className="mt-7 flex-1 space-y-1" aria-label="Main">
-        {NAV_ITEMS.map(({ name, path, icon: Icon, end, blurb }) => (
+        {items.map(({ name, path, icon: Icon, end, blurb }) => (
           <NavLink
             key={path}
             to={path}
@@ -105,7 +159,8 @@ function SidebarContent({ onNavigate }) {
         ))}
       </nav>
 
-      <div className="mt-auto space-y-2.5 border-t border-white/10 px-2 pt-4">
+      <div className="mt-auto space-y-3 border-t border-white/10 px-2 pt-4">
+        <AccountBlock />
         <BackendStatus />
         <a
           href="/docs"

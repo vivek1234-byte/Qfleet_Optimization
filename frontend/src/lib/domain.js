@@ -184,3 +184,69 @@ export const ALGORITHM_COLORS = {
 }
 
 export const algorithmColor = (id) => ALGORITHM_COLORS[id] ?? '#64748b'
+
+/* -------------------------------------------------------------------------- */
+/* Regulatory                                                                  */
+/* -------------------------------------------------------------------------- */
+/**
+ * IMO carbon intensity rating bands.
+ *
+ * A and B are superior, C meets the requirement, D three years running or E
+ * once forces a corrective action plan — so the colour break belongs between
+ * C and D, not in the middle of the scale.
+ */
+export const CII_COLORS = {
+  A: '#15af73',
+  B: '#65c97f',
+  C: '#f5c451',
+  D: '#f38b4a',
+  E: '#ef4444',
+}
+
+export const CII_BANDS = ['A', 'B', 'C', 'D', 'E']
+
+export const ciiColor = (band) => CII_COLORS[band] ?? '#64748b'
+
+/** Badge tone for a rating, for the shared Badge component. */
+export const ciiTone = (band) =>
+  band === 'A' || band === 'B' ? 'eco' : band === 'C' ? 'warning' : 'danger'
+
+export const ciiCompliant = (band) => band === 'A' || band === 'B' || band === 'C'
+
+export const MONTHS = [
+  { value: 1, label: 'January', short: 'Jan' },
+  { value: 2, label: 'February', short: 'Feb' },
+  { value: 3, label: 'March', short: 'Mar' },
+  { value: 4, label: 'April', short: 'Apr' },
+  { value: 5, label: 'May', short: 'May' },
+  { value: 6, label: 'June', short: 'Jun' },
+  { value: 7, label: 'July', short: 'Jul' },
+  { value: 8, label: 'August', short: 'Aug' },
+  { value: 9, label: 'September', short: 'Sep' },
+  { value: 10, label: 'October', short: 'Oct' },
+  { value: 11, label: 'November', short: 'Nov' },
+  { value: 12, label: 'December', short: 'Dec' },
+]
+
+/** Colour for a seasonal weather multiplier: calm green to rough red. */
+export function seasonColor(factor) {
+  if (!Number.isFinite(factor)) return '#64748b'
+  if (factor < 0.9) return '#15af73'
+  if (factor < 1.0) return '#84cc16'
+  if (factor < 1.15) return '#f5c451'
+  if (factor < 1.3) return '#f38b4a'
+  return '#ef4444'
+}
+
+/** What-if sandbox levers, so the page and its reset button agree. */
+export const SANDBOX_DEFAULTS = {
+  carbon_price_usd_per_ton: 0,
+  speed_cap_knots: '',
+  month: '',
+  n_vessels: 12,
+  n_routes: 7,
+  max_iterations: 120,
+  population_size: 50,
+  algorithm: 'qpso',
+  seed: 42,
+}

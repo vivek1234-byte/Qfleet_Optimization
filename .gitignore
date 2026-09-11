@@ -26,6 +26,12 @@ htmlcov/
 backend/prediction/saved_models/*.pkl
 backend/prediction/saved_models/*.pt
 
+# The accounts database is created locally by `alembic upgrade head`.
+# It holds password hashes; it never belongs in the repository.
+backend/data/*.db
+backend/data/*.db-journal
+backend/data/*.sqlite3
+
 # Node
 node_modules/
 frontend/dist/

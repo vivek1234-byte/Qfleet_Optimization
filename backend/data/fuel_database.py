@@ -42,6 +42,10 @@ class FuelType:
     readiness_score: float = 1.0
     #: Relative specific fuel consumption vs. a conventional HFO engine.
     sfc_multiplier: float = 1.0
+    #: Fuel sulphur content, % m/m. The global cap is 0.50% and the cap inside
+    #: an Emission Control Area is 0.10%, so this decides whether a ship has to
+    #: switch fuel on entering one.
+    sulphur_pct: float = 0.0
     notes: str = ""
 
     # ---- derived views ---------------------------------------------------
@@ -67,6 +71,11 @@ class FuelType:
     def is_zero_carbon(self) -> bool:
         return self.emission_factor_gco2_per_mj <= 0.0
 
+    @property
+    def eca_compliant(self) -> bool:
+        """True if this fuel may be burned inside an ECA without switching."""
+        return self.sulphur_pct <= 0.10 + 1e-9
+
     def to_dict(self) -> Dict[str, object]:
         return {
             "name": self.name,
@@ -79,6 +88,8 @@ class FuelType:
             "sox_factor": round(self.sox_factor, 4),
             "nox_factor": round(self.nox_factor, 4),
             "sfc_multiplier": round(self.sfc_multiplier, 3),
+            "sulphur_pct": round(self.sulphur_pct, 4),
+            "eca_compliant": self.eca_compliant,
             "co2_tons_per_ton_fuel": round(self.co2_tons_per_ton_fuel, 4),
             "cost_per_ton": round(self.cost_per_ton, 2),
             "is_zero_carbon": self.is_zero_carbon,
@@ -97,7 +108,8 @@ HFO = FuelType(
     nox_factor=5.00,
     readiness_score=1.00,
     sfc_multiplier=1.00,
-    notes="Baseline fuel. Requires scrubbers to meet the global sulphur cap.",
+    sulphur_pct=2.50,
+    notes="Baseline fuel. Above the global cap, so it needs a scrubber, and it can never be burned in an ECA without switching.",
 )
 
 VLSFO = FuelType(
@@ -111,7 +123,8 @@ VLSFO = FuelType(
     nox_factor=4.50,
     readiness_score=1.00,
     sfc_multiplier=1.00,
-    notes="IMO 2020 compliant without a scrubber.",
+    sulphur_pct=0.50,
+    notes="IMO 2020 compliant without a scrubber, but still above the 0.10% ECA cap.",
 )
 
 MGO = FuelType(
@@ -125,7 +138,8 @@ MGO = FuelType(
     nox_factor=4.20,
     readiness_score=1.00,
     sfc_multiplier=0.97,
-    notes="Distillate fuel, widely available, used in emission control areas.",
+    sulphur_pct=0.10,
+    notes="Distillate. At the 0.10% cap, so it is the usual switch fuel inside an ECA.",
 )
 
 LNG = FuelType(
@@ -139,7 +153,8 @@ LNG = FuelType(
     nox_factor=1.00,
     readiness_score=0.85,
     sfc_multiplier=0.89,
-    notes="Mature dual-fuel technology; methane slip is excluded from this factor.",
+    sulphur_pct=0.00,
+    notes="Mature dual-fuel technology, ECA compliant everywhere; methane slip is excluded from this factor.",
 )
 
 METHANOL = FuelType(
@@ -153,7 +168,8 @@ METHANOL = FuelType(
     nox_factor=0.80,
     readiness_score=0.70,
     sfc_multiplier=1.11,
-    notes="Low tank volume penalty vs. hydrogen; green methanol is near zero WtW.",
+    sulphur_pct=0.00,
+    notes="ECA compliant. Low tank-volume penalty vs. hydrogen; green methanol is near zero well-to-wake.",
 )
 
 AMMONIA = FuelType(
@@ -167,7 +183,8 @@ AMMONIA = FuelType(
     nox_factor=1.00,
     readiness_score=0.40,
     sfc_multiplier=1.06,
-    notes="Zero carbon at the stack; NOx after-treatment and toxicity handling required.",
+    sulphur_pct=0.00,
+    notes="Zero carbon and zero sulphur at the stack; NOx after-treatment and toxicity handling required.",
 )
 
 HYDROGEN = FuelType(
@@ -181,7 +198,8 @@ HYDROGEN = FuelType(
     nox_factor=0.00,
     readiness_score=0.30,
     sfc_multiplier=0.94,
-    notes="Highest energy per kg but very low energy per m3; large tank penalty.",
+    sulphur_pct=0.00,
+    notes="Zero sulphur. Highest energy per kg but very low energy per m3, so a large tank penalty.",
 )
 
 FUEL_DATABASE: Dict[str, FuelType] = {

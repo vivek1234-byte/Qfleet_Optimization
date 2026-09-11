@@ -178,30 +178,58 @@ def build_solver(
     raise ValueError(f"Unhandled algorithm '{algorithm}'")  # pragma: no cover
 
 
-def objective_for(algorithm: str, problem: FleetOptimizationProblem, weights=None):
+def objective_for(
+    algorithm: str,
+    problem: FleetOptimizationProblem,
+    weights=None,
+    progress: Optional[Callable[[int, float], None]] = None,
+):
     """
     Multi-objective solvers get the vector objective, the rest a scalar one.
 
     Both carry the same ``trace`` function, so every algorithm's convergence
     history is the *same* normalised scalar and the four curves can be
     compared directly on one chart.
+
+    ``trace`` is also the one place every solver touches exactly once per
+    iteration, which makes it the natural hook for streaming progress. Wrapping
+    it here means no solver needs to know that anyone is watching.
     """
     spec = ALGORITHM_SPECS[normalise_algorithm(algorithm)]
     w = problem.scalar_weights(weights)
 
-    def trace(F: np.ndarray) -> float:
+    def base_trace(F: np.ndarray) -> float:
         return float((problem.normalise(np.atleast_2d(F)) @ w).min())
+
+    def scalar_trace(F: np.ndarray) -> float:
+        return float(np.asarray(F, dtype=float).min())
+
+    def instrument(fn: Callable[[np.ndarray], float]) -> Callable[[np.ndarray], float]:
+        if progress is None:
+            return fn
+        counter = {"i": 0}
+
+        def traced(F: np.ndarray) -> float:
+            value = fn(F)
+            counter["i"] += 1
+            try:
+                progress(counter["i"], value)
+            except Exception:  # pragma: no cover - a listener must never
+                logger.debug("progress callback raised", exc_info=True)  # break a run
+            return value
+
+        return traced
 
     if spec.multi_objective:
         def vector_objective(x: np.ndarray) -> np.ndarray:
             return problem.evaluate(x)
 
         vector_objective.batch = problem.evaluate_batch  # type: ignore[attr-defined]
-        vector_objective.trace = trace  # type: ignore[attr-defined]
+        vector_objective.trace = instrument(base_trace)  # type: ignore[attr-defined]
         return vector_objective
 
     scalar = problem.scalar_objective(weights)
-    scalar.trace = lambda F: float(np.asarray(F, dtype=float).min())  # type: ignore[attr-defined]
+    scalar.trace = instrument(scalar_trace)  # type: ignore[attr-defined]
     return scalar
 
 
@@ -217,8 +245,14 @@ def run_algorithm(
     archive_size: int = 100,
     weights: Optional[Sequence[float]] = None,
     seed: Optional[int] = None,
+    progress: Optional[Callable[[int, float], None]] = None,
 ) -> OptimizeResult:
-    """Run one solver on ``problem`` and return its raw result."""
+    """
+    Run one solver on ``problem`` and return its raw result.
+
+    ``progress`` is called once per iteration with ``(iteration, value)``,
+    where value is the same normalised scalar the convergence chart plots.
+    """
     algorithm = normalise_algorithm(algorithm)
     solver = build_solver(
         algorithm,
@@ -228,7 +262,7 @@ def run_algorithm(
         archive_size=archive_size,
         seed=seed,
     )
-    objective = objective_for(algorithm, problem, weights)
+    objective = objective_for(algorithm, problem, weights, progress=progress)
 
     started = time.perf_counter()
     result = solver.optimize(objective)
@@ -372,6 +406,9 @@ def optimize(
     weights: Optional[Sequence[float]] = None,
     seed: Optional[int] = 42,
     include_plan: bool = True,
+    month: Optional[int] = None,
+    speed_cap_knots: Optional[float] = None,
+    progress: Optional[Callable[[int, float], None]] = None,
 ) -> Dict[str, Any]:
     """End-to-end convenience wrapper: build the problem, solve it, summarise."""
     problem = FleetOptimizationProblem(
@@ -380,6 +417,8 @@ def optimize(
         fuel_types=list(fuel_types) if fuel_types else None,
         seed=seed if seed is not None else 42,
         carbon_price_usd_per_ton=carbon_price_usd_per_ton,
+        month=month,
+        speed_cap_knots=speed_cap_knots,
     )
     result = run_algorithm(
         algorithm,
@@ -388,6 +427,7 @@ def optimize(
         population_size=population_size,
         weights=weights,
         seed=seed,
+        progress=progress,
     )
     payload = summarise_run(result, problem, include_plan=include_plan)
     payload["problem"] = {
@@ -396,5 +436,7 @@ def optimize(
         "n_dimensions": problem.n_dimensions,
         "fuel_types": problem.fuel_types,
         "carbon_price_usd_per_ton": problem.carbon_price_usd_per_ton,
+        "month": problem.month,
+        "speed_cap_knots": problem.speed_cap_knots,
     }
     return payload
