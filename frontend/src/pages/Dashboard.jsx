@@ -206,84 +206,95 @@ export default function Dashboard() {
         onOpenSimulator={() => navigate('/simulator')}
       />
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-3">
-        {/* System status */}
-        <Card className="lg:col-span-1" title="System" description="Everything this demo depends on">
-          {health.loading ? (
-            <Skeleton className="h-32 w-full" />
-          ) : (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <Badge tone={health.data?.status === 'healthy' ? 'eco' : 'warning'}>
-                  {health.data?.status ?? 'unknown'}
-                </Badge>
-                <span className="text-faint text-xs">API v{health.data?.version}</span>
+      <div className="mt-5">
+        {/* System status — full width, its three blocks laid across the space
+            rather than stacked in a narrow left column. */}
+        <Card title="System" description="Everything this demo depends on">
+          <div className="grid gap-6 lg:min-h-[clamp(22rem,55vh,40rem)] lg:grid-cols-3">
+            {/* Dependency checks */}
+            <div className="flex flex-col justify-center">
+              {health.loading ? (
+                <Skeleton className="h-40 w-full" />
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge tone={health.data?.status === 'healthy' ? 'eco' : 'warning'}>
+                      {health.data?.status ?? 'unknown'}
+                    </Badge>
+                    <span className="text-faint text-xs">API v{health.data?.version}</span>
+                  </div>
+                  {Object.entries(health.data?.checks ?? {}).map(([name, check]) => (
+                    <CheckRow key={name} ok={check.ok} label={name} detail={check.detail} />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Prediction model */}
+            <div
+              className="flex flex-col justify-center space-y-3 border-t pt-4 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0"
+              style={{ borderColor: 'rgb(var(--border-subtle))' }}
+            >
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <span className="text-faint">Prediction model</span>
+                <span className="numeric font-medium">
+                  {metrics ? `R² ${num(metrics.r2, 4)}` : '—'}
+                </span>
               </div>
-              {Object.entries(health.data?.checks ?? {}).map(([name, check]) => (
-                <CheckRow key={name} ok={check.ok} label={name} detail={check.detail} />
-              ))}
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <span className="text-faint">Mean error</span>
+                <span className="numeric font-medium">{metrics ? pct(metrics.mape, 2) : '—'}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <span className="text-faint">Trained on</span>
+                <span className="numeric font-medium">
+                  {metrics ? `${num(metrics.n_train)} voyages` : '—'}
+                </span>
+              </div>
             </div>
-          )}
 
-          <div
-            className="mt-4 space-y-3 border-t pt-4"
-            style={{ borderColor: 'rgb(var(--border-subtle))' }}
-          >
-            <div className="flex items-center justify-between gap-2 text-sm">
-              <span className="text-faint">Prediction model</span>
-              <span className="numeric font-medium">
-                {metrics ? `R² ${num(metrics.r2, 4)}` : '—'}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2 text-sm">
-              <span className="text-faint">Mean error</span>
-              <span className="numeric font-medium">{metrics ? pct(metrics.mape, 2) : '—'}</span>
-            </div>
-            <div className="flex items-center justify-between gap-2 text-sm">
-              <span className="text-faint">Trained on</span>
-              <span className="numeric font-medium">
-                {metrics ? `${num(metrics.n_train)} voyages` : '—'}
-              </span>
-            </div>
-          </div>
-
-          {typeSplit.length > 0 && (
-            <div className="mt-4 border-t pt-3" style={{ borderColor: 'rgb(var(--border-subtle))' }}>
-              <ChartFrame height={150}>
-                <PieChart>
-                  <Pie
-                    data={typeSplit}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={34}
-                    outerRadius={58}
-                    paddingAngle={2}
-                    stroke="none"
-                  >
-                    {typeSplit.map((entry) => (
-                      <Cell
-                        key={entry.name}
-                        fill={VESSEL_TYPE_COLORS[entry.name] ?? '#64748b'}
+            {/* Fleet composition */}
+            {typeSplit.length > 0 && (
+              <div
+                className="flex flex-col justify-center border-t pt-4 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0"
+                style={{ borderColor: 'rgb(var(--border-subtle))' }}
+              >
+                <ChartFrame height={190}>
+                  <PieChart>
+                    <Pie
+                      data={typeSplit}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={46}
+                      outerRadius={78}
+                      paddingAngle={2}
+                      stroke="none"
+                    >
+                      {typeSplit.map((entry) => (
+                        <Cell
+                          key={entry.name}
+                          fill={VESSEL_TYPE_COLORS[entry.name] ?? '#64748b'}
+                        />
+                      ))}
+                    </Pie>
+                    <ThemedTooltip formatter={(v, n) => [`${v} vessels`, n]} />
+                  </PieChart>
+                </ChartFrame>
+                <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
+                  {typeSplit.map((entry) => (
+                    <span key={entry.name} className="text-faint flex items-center gap-1.5 text-xs">
+                      <span
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: VESSEL_TYPE_COLORS[entry.name] ?? '#64748b' }}
+                        aria-hidden
                       />
-                    ))}
-                  </Pie>
-                  <ThemedTooltip formatter={(v, n) => [`${v} vessels`, n]} />
-                </PieChart>
-              </ChartFrame>
-              <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
-                {typeSplit.map((entry) => (
-                  <span key={entry.name} className="text-faint flex items-center gap-1.5 text-xs">
-                    <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: VESSEL_TYPE_COLORS[entry.name] ?? '#64748b' }}
-                      aria-hidden
-                    />
-                    {entry.name} · {entry.value}
-                  </span>
-                ))}
+                      {entry.name} · {entry.value}
+                    </span>
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </Card>
       </div>
 
