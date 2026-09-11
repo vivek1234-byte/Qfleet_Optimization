@@ -15,6 +15,7 @@ export default function VoyageMap({
   network,
   ships,
   clockRef,
+  engineRef,
   running,
   timeScale,
   layers,
@@ -54,6 +55,7 @@ export default function VoyageMap({
           ships={ships}
           geometries={network.geometries}
           clockRef={clockRef}
+          engineRef={engineRef}
           running={running}
           timeScale={timeScale}
           selectedId={selectedId}

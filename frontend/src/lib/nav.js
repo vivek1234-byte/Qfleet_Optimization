@@ -27,16 +27,12 @@ export const NAV_ITEMS = [
     path: '/admin',
     icon: Users,
     blurb: 'Accounts and access',
-    // Administrators only. This is presentation — `/api/admin/*` is behind
-    // `require_admin` on the server, and that is the check that matters. See
-    // backend/auth/deps.py.
+    // Administrators only. `navItemsFor` filters on this so the link is never
+    // rendered for an employee — but that is presentation. `/api/admin/*` is
+    // behind `require_admin` on the server, and `RequireAdmin` guards the
+    // route, so an employee who types /admin is turned away and any direct API
+    // call gets a 403. See backend/auth/deps.py and components/RequireAuth.jsx.
     role: 'ADMIN',
-    // Kept out of the sidebar entirely, for everyone. The page is still there
-    // and still works: an administrator reaches it by typing /admin, and
-    // `RequireAdmin` turns anyone else away. The entry stays in this list
-    // rather than being deleted because the header title is looked up here —
-    // remove it and the page renders as "Not found" above a working table.
-    hidden: true,
   },
 ]
 

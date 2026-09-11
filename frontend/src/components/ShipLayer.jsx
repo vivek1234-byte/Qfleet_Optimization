@@ -180,7 +180,7 @@ const ShipMarker = memo(
 export default function ShipLayer({
   ships,
   geometries,
-  clockRef,
+  clockRef = null,
   running,
   timeScale,
   selectedId,
@@ -190,6 +190,7 @@ export default function ShipLayer({
   onSelect,
   onTick,
   tickIntervalMs = 250,
+  engineRef = null,
 }) {
   // Sized from the enclosing map's own element, which matters when two maps
   // share one viewport in the split comparison.
@@ -213,6 +214,7 @@ export default function ShipLayer({
     geometries,
     running,
     timeScale,
+    engineRef,
     pxPerUnit,
     showTrails,
     showNames,
@@ -225,6 +227,7 @@ export default function ShipLayer({
       geometries,
       running,
       timeScale,
+      engineRef,
       pxPerUnit,
       showTrails,
       showNames,
@@ -243,9 +246,16 @@ export default function ShipLayer({
       const s = stateRef.current
       const dt = lastTs ? Math.min((ts - lastTs) / 1000, 0.25) : 0
       lastTs = ts
-      if (s.running) clockRef.current.hours += dt * s.timeScale
 
-      const hours = clockRef.current.hours
+      // Two modes. With an engine, the page owns the clock and the vessel
+      // state machine and this layer is purely a renderer — which is what
+      // lets a vessel be held while the clock keeps running. Without one,
+      // the original closed-form voyage animation applies unchanged, so the
+      // dashboard and the split comparison behave exactly as they did.
+      const engine = s.engineRef?.current ?? null
+      if (!engine && clockRef && s.running) clockRef.current.hours += dt * s.timeScale
+      const hours = engine ? engine.hours : (clockRef?.current.hours ?? 0)
+      const byId = engine?.byId ?? null
       // A vessel icon should stay the same size on screen at every zoom level.
       // The shape is 26 units tall, so this makes it MARKER_PX tall whatever
       // the viewBox is.
@@ -258,7 +268,15 @@ export default function ShipLayer({
         const geometry = s.geometries[ship.laneName]
         if (!nodes || !geometry) continue
 
-        const state = voyageState(ship, hours)
+        const live = byId?.get(ship.id)
+        const state = live
+          ? {
+              nm: live.positionNm,
+              progress: live.progress,
+              inbound: live.inbound,
+              berthed: live.dwellRemaining > 0 || live.held,
+            }
+          : voyageState(ship, hours)
         const { x, y, heading } = positionAt(geometry, state.nm)
         const facing = state.inbound ? heading + 180 : heading
 
@@ -298,7 +316,7 @@ export default function ShipLayer({
 
       if (s.onTick && ts - lastTick >= s.tickIntervalMs) {
         lastTick = ts
-        s.onTick(hours, s.ships.map((ship) => snapshotShip(ship, hours)))
+        s.onTick(hours, engine ? null : s.ships.map((ship) => snapshotShip(ship, hours)))
       }
     }
 

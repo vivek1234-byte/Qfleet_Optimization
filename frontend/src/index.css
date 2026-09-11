@@ -209,6 +209,17 @@
     animation-play-state: paused;
   }
 
+  /* Network flow: the same trick as .lane-flow but with a round cap and a
+     long gap, which reads as dots travelling the lane. One path per lane
+     rather than one node per dot — sixteen elements for the whole network,
+     animated by the compositor. The global prefers-reduced-motion rule above
+     neutralises it without any extra handling here. */
+  .lane-particles {
+    stroke-dasharray: 0.01 3.2;
+    stroke-linecap: round;
+    animation: lane-dash 3.2s linear infinite;
+  }
+
   @keyframes lane-dash {
     to {
       stroke-dashoffset: -4;

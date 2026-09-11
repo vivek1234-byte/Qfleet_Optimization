@@ -53,11 +53,12 @@ from db.session import get_engine, session_scope  # noqa: E402
 # Demo staff for `seed`. Passwords are printed on creation and are meant to be
 # changed; this is a walkthrough dataset, not a set of real accounts.
 DEMO_EMPLOYEES = [
-    ("EMP001", "Fleet Administrator", "ADMIN", "Operations", "admin@qfleet.local", "Admin@12345"),
-    ("EMP002", "Priya Nair", "EMPLOYEE", "Voyage Planning", "priya.nair@qfleet.local", "Fleet@12345"),
-    ("EMP003", "Arjun Menon", "EMPLOYEE", "Bunkering", "arjun.menon@qfleet.local", "Fleet@12345"),
-    ("EMP004", "Sara Iqbal", "EMPLOYEE", "Compliance", "sara.iqbal@qfleet.local", "Fleet@12345"),
-    ("EMP005", "Rohit Deshmukh", "ADMIN", "Fleet Management", "rohit.d@qfleet.local", "Admin@12345"),
+    # id, name, role, department, designation, email, password
+    ("EMP001", "Fleet Administrator", "ADMIN", "Operations", "Fleet Administrator", "admin@qfleet.local", "Admin@12345"),
+    ("EMP002", "Priya Nair", "EMPLOYEE", "Voyage Planning", "Voyage Planner", "priya.nair@qfleet.local", "Fleet@12345"),
+    ("EMP003", "Arjun Menon", "EMPLOYEE", "Bunkering", "Bunker Analyst", "arjun.menon@qfleet.local", "Fleet@12345"),
+    ("EMP004", "Sara Iqbal", "EMPLOYEE", "Compliance", "Compliance Officer", "sara.iqbal@qfleet.local", "Fleet@12345"),
+    ("EMP005", "Rohit Deshmukh", "ADMIN", "Fleet Management", "Fleet Manager", "rohit.d@qfleet.local", "Admin@12345"),
 ]
 
 
@@ -168,6 +169,7 @@ def cmd_bootstrap(args) -> None:
         if get_by_employee_id(db, employee_id) is not None:
             _die(f"{normalise_employee_id(employee_id)} already exists. Use `passwd` to reset it.")
 
+        designation = args.designation or os.getenv("QGF_ADMIN_DESIGNATION") or "Fleet Administrator"
         employee = create_employee(
             db,
             employee_id=employee_id,
@@ -175,6 +177,7 @@ def cmd_bootstrap(args) -> None:
             password=password,
             role=Role.ADMIN.value,
             department=department,
+            designation=designation,
             email=args.email,
         )
         print(f"Administrator created: {employee.employee_id} ({employee.full_name})")
@@ -198,7 +201,7 @@ def cmd_seed(args) -> None:
         )
     created, skipped = [], []
     with session_scope() as db:
-        for employee_id, name, role, department, email, password in DEMO_EMPLOYEES:
+        for employee_id, name, role, department, designation, email, password in DEMO_EMPLOYEES:
             if get_by_employee_id(db, employee_id) is not None:
                 skipped.append(employee_id)
                 continue
@@ -209,6 +212,7 @@ def cmd_seed(args) -> None:
                 password=password,
                 role=role,
                 department=department,
+                designation=designation,
                 email=email,
             )
             created.append((employee_id, role, password))
@@ -254,6 +258,7 @@ def cmd_add(args) -> None:
             password=password,
             role=args.role,
             department=args.department or "",
+            designation=getattr(args, "designation", "") or "",
             email=args.email,
         )
         print(f"Created {employee.employee_id} ({employee.role}).")
@@ -344,6 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--employee-id", help="Default: EMP001 or QGF_ADMIN_EMPLOYEE_ID")
     p.add_argument("--name", help="Default: Fleet Administrator or QGF_ADMIN_NAME")
     p.add_argument("--department", help="Default: Operations or QGF_ADMIN_DEPARTMENT")
+    p.add_argument("--designation", help="Default: Fleet Administrator or QGF_ADMIN_DESIGNATION")
     p.add_argument("--email")
     p.add_argument("--password", help=password_help)
     p.add_argument("--force", action="store_true", help="Create even if an administrator exists")
@@ -366,6 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p.add_argument("--role", default=Role.EMPLOYEE.value, choices=Role.values())
     p.add_argument("--department", default="")
+    p.add_argument("--designation", default="", help="Job title, e.g. \"Fleet Manager\"")
     p.add_argument("--email")
     p.add_argument("--password", help=password_help)
     p.set_defaults(func=cmd_add)

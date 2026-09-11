@@ -25,8 +25,6 @@ import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Cell, Pie, PieChart } from 'recharts'
 
-import VoyageMap from '../components/VoyageMap'
-import { useMapViewport } from '../components/WorldMap'
 import { ChartFrame, ThemedTooltip } from '../components/charts'
 import {
   Alert,
@@ -40,25 +38,14 @@ import {
   StatCard,
   cx,
 } from '../components/ui'
-import { MAP_VIEWS } from '../data/geography'
 import { useAsync, useFetch } from '../hooks/useApi'
+import NetworkSection from '../components/network/NetworkSection'
 import { useNetwork } from '../hooks/useNetwork'
 import api from '../lib/api'
+import { useSession } from '../lib/auth'
 import { OPTIMIZER_PRESETS, VESSEL_TYPE_COLORS } from '../lib/domain'
 import { compact, num, pct, seconds, usd } from '../lib/format'
 import { setActivePlan, useActivePlan } from '../lib/planStore'
-
-const EMPTY = []
-const IDLE_CLOCK = { current: { hours: 0 } }
-const DASHBOARD_LAYERS = {
-  trails: false,
-  names: false,
-  portLabels: true,
-  chokepoints: false,
-  eca: false,
-  graticule: true,
-  weather: false,
-}
 
 function CheckRow({ ok, label, detail }) {
   return (
@@ -78,15 +65,20 @@ function CheckRow({ ok, label, detail }) {
 
 export default function Dashboard() {
   const navigate = useNavigate()
+  const { session } = useSession()
   const health = useFetch((signal) => api.health({ signal }), [])
   const network = useNetwork()
-  const registry = { data: network.registry, loading: network.loading }
+  // The baseline deployment — real vessel-to-lane assignments at design
+  // speed. One extra call, fetched once, and it is what lets the network map
+  // show a fleet before the user has run anything.
+  const fleetBaseline = useFetch(
+    (signal) => api.optimization.fleet({ n_vessels: 20, n_routes: 16 }, { signal }),
+    [],
+  )
   const modelInfo = useFetch((signal) => api.prediction.modelInfo({ signal }), [])
   const algorithms = useFetch((signal) => api.optimization.algorithms({ signal }), [])
   const optimise = useAsync((signal, body) => api.optimization.optimize(body, { signal }))
   const active = useActivePlan()
-
-  const viewport = useMapViewport(MAP_VIEWS.indianOcean.box)
 
   const { vessels } = network
 
@@ -115,6 +107,16 @@ export default function Dashboard() {
 
   return (
     <>
+      {session && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <p className="text-body text-sm">
+            Welcome back, <span className="font-semibold">{session.name}</span>.
+          </p>
+          <Badge tone={session.role === 'ADMIN' ? 'primary' : 'neutral'}>
+            {session.role === 'ADMIN' ? 'Administrator' : 'Employee'}
+          </Badge>
+        </div>
+      )}
       <PageHeader
         title="QFleet"
         description="Quantum-inspired multi-objective optimisation for maritime decarbonisation. Decide which vessel sails which lane, at what speed, on which fuel — cutting bunker, CO₂ and cost together rather than trading one for another."
@@ -194,38 +196,19 @@ export default function Dashboard() {
         </Card>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        {/* Map preview */}
-        <Card
-          className="flex flex-col lg:col-span-2"
-          bodyClassName="flex-1 p-0"
-          title="Network"
-          description={`${registry.data?.lane_count ?? '—'} trade lanes serving ${registry.data?.vessel_count ?? '—'} vessels`}
-          actions={
-            <Button size="sm" variant="secondary" icon={Radar} onClick={() => navigate('/simulator')}>
-              Open live simulator
-            </Button>
-          }
-        >
-          <div className="h-full min-h-[20rem] overflow-hidden rounded-b-xl">
-            {registry.loading ? (
-              <Skeleton className="h-full w-full" />
-            ) : (
-              <VoyageMap
-                viewport={viewport}
-                network={network}
-                ships={EMPTY}
-                clockRef={IDLE_CLOCK}
-                running={false}
-                timeScale={0}
-                layers={DASHBOARD_LAYERS}
-              />
-            )}
-          </div>
-        </Card>
+      {/* Maritime network intelligence. Full width: the KPI strip, filters and
+          the ranking/health footer do not fit in two thirds of the grid. */}
+      <NetworkSection
+        network={network}
+        baseline={fleetBaseline.data?.baseline ?? null}
+        plan={active.result?.plan ?? null}
+        loading={network.loading || fleetBaseline.loading}
+        onOpenSimulator={() => navigate('/simulator')}
+      />
 
+      <div className="mt-5 grid gap-5 lg:grid-cols-3">
         {/* System status */}
-        <Card title="System" description="Everything this demo depends on">
+        <Card className="lg:col-span-1" title="System" description="Everything this demo depends on">
           {health.loading ? (
             <Skeleton className="h-32 w-full" />
           ) : (

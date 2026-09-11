@@ -66,8 +66,16 @@ class Employee(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False, default=Role.EMPLOYEE.value)
     department: Mapped[str] = mapped_column(String(80), nullable=False, default="")
 
+    # The job title within the department — "Fleet Manager", "Bunker Analyst".
+    # Distinct from role, which is a permission level, not a job.
+    designation: Mapped[str] = mapped_column(String(80), nullable=False, default="", server_default="")
+
     # Optional: an operator may not issue addresses to every rank on board.
     email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+
+    # Stamped on each successful sign-in. Nullable because a freshly created
+    # account has never signed in — the UI shows "Never" rather than a fake date.
+    last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Deactivation instead of deletion, so an account can be revoked without
     # losing who it was.
@@ -100,6 +108,35 @@ class Employee(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Employee {self.employee_id} {self.role} active={self.is_active}>"
+
+
+class AuditLog(Base):
+    """
+    An administrator action worth keeping a record of.
+
+    Deliberately append-only and self-contained: it stores the *text* of who
+    did what to whom, not foreign keys, so deleting an employee never erases
+    the history of what was done to their account. No password material is ever
+    written here — the recording sites pass a human summary, never a payload.
+    """
+
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now(), index=True
+    )
+    # Who did it — the acting administrator's Employee ID, copied in as text.
+    actor: Mapped[str] = mapped_column(String(32), nullable=False)
+    # What they did — a short verb phrase, e.g. "Created employee".
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    # Who it was done to — the target's Employee ID, or "" for fleet-wide acts.
+    target: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    # How it went — "Success" or a short failure reason.
+    result: Mapped[str] = mapped_column(String(120), nullable=False, default="Success")
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<AuditLog {self.created_at} {self.actor} {self.action} {self.target}>"
 
 
 def normalise_employee_id(raw: str) -> str:

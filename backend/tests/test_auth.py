@@ -420,6 +420,7 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/employees/1/reset-password", {"new_password": "Passw0rd!23"}),
     ("post", "/api/admin/employees/1/revoke-sessions", None),
     ("delete", "/api/admin/employees/1", None),
+    ("get", "/api/admin/audit", None),
 ]
 
 
@@ -1081,3 +1082,84 @@ class TestInactiveIsPrivateByDefault:
         )
         assert disabled.status_code == wrong.status_code == 401
         assert disabled.json() == wrong.json()
+
+
+# ---------------------------------------------------------------------------
+# Designation, last-login and the audit trail
+# ---------------------------------------------------------------------------
+class TestProfileFieldsAndAudit:
+    """The fields and the log added on top of the core auth boundary."""
+
+    def _make(self, client, admin_headers, employee_id, **extra):
+        body = {
+            "employee_id": employee_id,
+            "full_name": "Test Person",
+            "department": "Operations",
+            "designation": "Bunker Analyst",
+            "role": "EMPLOYEE",
+            "password": "harbour-tide-9471",
+            **extra,
+        }
+        response = client.post("/api/admin/employees", headers=admin_headers, json=body)
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    def test_designation_round_trips(self, client, admin_headers):
+        created = self._make(client, admin_headers, "EMP701", designation="Fleet Manager")
+        assert created["designation"] == "Fleet Manager"
+        fetched = client.get(
+            f"/api/admin/employees/{created['id']}", headers=admin_headers
+        ).json()
+        assert fetched["designation"] == "Fleet Manager"
+
+    def test_designation_can_be_edited(self, client, admin_headers):
+        created = self._make(client, admin_headers, "EMP702")
+        updated = client.put(
+            f"/api/admin/employees/{created['id']}",
+            headers=admin_headers,
+            json={"designation": "Senior Analyst"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["designation"] == "Senior Analyst"
+
+    def test_new_account_has_never_logged_in(self, client, admin_headers):
+        created = self._make(client, admin_headers, "EMP703")
+        assert created["last_login"] is None
+
+    def test_login_stamps_last_login(self, client, admin_headers):
+        created = self._make(client, admin_headers, "EMP704", password="anchor-drift-3318")
+        assert client.post(
+            "/api/auth/login", json={"employee_id": "EMP704", "password": "anchor-drift-3318"}
+        ).status_code == 200
+        after = client.get(
+            f"/api/admin/employees/{created['id']}", headers=admin_headers
+        ).json()
+        assert after["last_login"] is not None
+
+    def test_admin_actions_are_audited(self, client, admin_headers):
+        self._make(client, admin_headers, "EMP705")
+        entries = client.get("/api/admin/audit", headers=admin_headers).json()["entries"]
+        latest = entries[0]
+        assert latest["actor"] == "EMP001"
+        assert latest["action"] == "Created employee"
+        assert latest["target"] == "EMP705"
+        assert latest["result"] == "Success"
+
+    def test_audit_never_contains_password_material(self, client, admin_headers):
+        created = self._make(client, admin_headers, "EMP706")
+        client.post(
+            f"/api/admin/employees/{created['id']}/reset-password",
+            headers=admin_headers,
+            json={"new_password": "bunker-lane-5520"},
+        )
+        blob = client.get("/api/admin/audit", headers=admin_headers).text
+        assert "bunker-lane-5520" not in blob
+        assert "password_hash" not in blob
+
+    def test_audit_is_admin_only(self, client, staff_headers):
+        assert client.get("/api/admin/audit").status_code == 401
+        assert client.get("/api/admin/audit", headers=staff_headers).status_code == 403
+
+    def test_stats_include_inactive(self, client, admin_headers):
+        body = client.get("/api/admin/employees", headers=admin_headers).json()
+        assert body["inactive"] == body["total"] - body["active"]

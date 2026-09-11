@@ -66,11 +66,10 @@ function AccountBlock() {
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-xs font-medium text-slate-200">{session.name}</span>
-        {/* Employee ID and department, because in an operations room that is
-            how people are identified — the email address, if there even is
-            one, tells a colleague less. */}
+        {/* Employee ID and role — how a person is identified in an operations
+            room, and the two facts that decide what they can do. */}
         <span className="block truncate text-[0.68rem] text-slate-500">
-          {[session.employeeId, session.role === 'ADMIN' ? 'Admin' : session.department]
+          {[session.employeeId, session.role === 'ADMIN' ? 'Administrator' : 'Employee']
             .filter(Boolean)
             .join(' · ') || 'Signed in'}
         </span>

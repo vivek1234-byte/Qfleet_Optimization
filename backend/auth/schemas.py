@@ -102,8 +102,10 @@ class EmployeeOut(BaseModel):
     full_name: str
     role: str
     department: str
+    designation: str
     email: Optional[str] = None
     is_active: bool
+    last_login: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -115,8 +117,10 @@ class EmployeeOut(BaseModel):
             full_name=employee.full_name,
             role=employee.role,
             department=employee.department or "",
+            designation=employee.designation or "",
             email=employee.email,
             is_active=employee.is_active,
+            last_login=employee.last_login,
             created_at=employee.created_at,
             updated_at=employee.updated_at,
         )
@@ -168,6 +172,7 @@ class EmployeeCreate(BaseModel):
     employee_id: str
     full_name: str
     department: str = ""
+    designation: str = ""
     role: str = Role.EMPLOYEE.value
     email: Optional[str] = None
     password: str
@@ -194,6 +199,14 @@ class EmployeeCreate(BaseModel):
         cleaned = " ".join(str(value or "").split())
         if len(cleaned) > 80:
             raise ValueError("Department must be at most 80 characters.")
+        return cleaned
+
+    @field_validator("designation")
+    @classmethod
+    def _clean_designation(cls, value: str) -> str:
+        cleaned = " ".join(str(value or "").split())
+        if len(cleaned) > 80:
+            raise ValueError("Designation must be at most 80 characters.")
         return cleaned
 
     @field_validator("role")
@@ -227,6 +240,7 @@ class EmployeeUpdate(BaseModel):
 
     full_name: Optional[str] = None
     department: Optional[str] = None
+    designation: Optional[str] = None
     role: Optional[str] = None
     email: Optional[str] = None
     is_active: Optional[bool] = None
@@ -244,6 +258,13 @@ class EmployeeUpdate(BaseModel):
         if value is None:
             return None
         return EmployeeCreate._clean_department(value)
+
+    @field_validator("designation")
+    @classmethod
+    def _clean_designation(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return EmployeeCreate._clean_designation(value)
 
     @field_validator("role")
     @classmethod
@@ -274,3 +295,20 @@ class EmployeeListResponse(BaseModel):
     total: int
     active: int
     admins: int
+    inactive: int
+
+
+class AuditEntryOut(BaseModel):
+    """One line of the administrator action log. No secrets, by construction."""
+
+    id: int
+    created_at: datetime
+    actor: str
+    action: str
+    target: str
+    result: str
+
+
+class AuditListResponse(BaseModel):
+    entries: List[AuditEntryOut]
+    total: int

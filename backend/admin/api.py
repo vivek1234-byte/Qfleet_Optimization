@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from auth.deps import require_admin
 from auth.schemas import (
+    AuditEntryOut,
+    AuditListResponse,
     EmployeeCreate,
     EmployeeListResponse,
     EmployeeOut,
@@ -29,9 +31,12 @@ from auth.schemas import (
 )
 from auth.security import password_problem
 from auth.service import (
+    count_audit,
     create_employee,
     delete_employee,
+    list_audit,
     list_employees,
+    record_audit,
     require_by_pk,
     revoke_sessions,
     set_password,
@@ -67,11 +72,13 @@ def list_all(
     rows = list_employees(db, search=search, role=role, active=active)
     # Totals describe the filtered set, so the header figures always match the
     # table underneath them rather than describing some other population.
+    active_count = sum(1 for row in rows if row.is_active)
     return EmployeeListResponse(
         employees=[EmployeeOut.from_model(row) for row in rows],
         total=len(rows),
-        active=sum(1 for row in rows if row.is_active),
+        active=active_count,
         admins=sum(1 for row in rows if row.role == Role.ADMIN.value),
+        inactive=len(rows) - active_count,
     )
 
 
@@ -103,10 +110,12 @@ def create(
         password=payload.password,
         role=payload.role,
         department=payload.department,
+        designation=payload.designation,
         email=payload.email,
         is_active=payload.is_active,
     )
     logger.info("%s created employee %s (%s)", actor.employee_id, employee.employee_id, employee.role)
+    record_audit(db, actor=actor.employee_id, action="Created employee", target=employee.employee_id)
     return EmployeeOut.from_model(employee)
 
 
@@ -131,6 +140,7 @@ def update(
 
     employee = update_employee(db, employee, changes)
     logger.info("%s updated employee %s", actor.employee_id, employee.employee_id)
+    record_audit(db, actor=actor.employee_id, action="Edited employee", target=employee.employee_id)
     return EmployeeOut.from_model(employee)
 
 
@@ -146,6 +156,7 @@ def activate(
 ) -> EmployeeOut:
     employee = update_employee(db, require_by_pk(db, pk), {"is_active": True})
     logger.info("%s activated %s", actor.employee_id, employee.employee_id)
+    record_audit(db, actor=actor.employee_id, action="Reactivated account", target=employee.employee_id)
     return EmployeeOut.from_model(employee)
 
 
@@ -164,6 +175,7 @@ def deactivate(
         raise ValidationError("You cannot deactivate your own account.")
     employee = update_employee(db, employee, {"is_active": False})
     logger.info("%s deactivated %s", actor.employee_id, employee.employee_id)
+    record_audit(db, actor=actor.employee_id, action="Deactivated account", target=employee.employee_id)
     return EmployeeOut.from_model(employee)
 
 
@@ -190,6 +202,7 @@ def reset_password(
         actor.employee_id,
         employee.employee_id,
     )
+    record_audit(db, actor=actor.employee_id, action="Reset password", target=employee.employee_id)
     return MessageResponse(
         message=(
             f"Password reset for {employee.employee_id} and all their sessions ended. "
@@ -218,6 +231,7 @@ def revoke(
     employee = require_by_pk(db, pk)
     revoke_sessions(db, employee)
     logger.info("%s revoked all sessions for %s", actor.employee_id, employee.employee_id)
+    record_audit(db, actor=actor.employee_id, action="Signed out everywhere", target=employee.employee_id)
     return MessageResponse(message=f"{employee.employee_id} has been signed out everywhere.")
 
 
@@ -245,4 +259,24 @@ def remove(
     employee_id = employee.employee_id
     delete_employee(db, employee)
     logger.info("%s deleted employee %s", actor.employee_id, employee_id)
+    record_audit(db, actor=actor.employee_id, action="Deleted employee", target=employee_id)
     return MessageResponse(message=f"{employee_id} deleted.")
+
+
+@router.get("/audit", response_model=AuditListResponse, summary="Recent administrator actions")
+def audit(
+    limit: int = Query(100, ge=1, le=500, description="How many recent entries to return"),
+    db: Session = Depends(get_db),
+) -> AuditListResponse:
+    """
+    The administrator action log, newest first.
+
+    Admin-only like everything else on this router. It records who did what to
+    whom and when — never a password or a token, because the recording sites
+    pass a summary line, not a payload.
+    """
+    rows = list_audit(db, limit=limit)
+    return AuditListResponse(
+        entries=[AuditEntryOut.model_validate(row, from_attributes=True) for row in rows],
+        total=count_audit(db),
+    )

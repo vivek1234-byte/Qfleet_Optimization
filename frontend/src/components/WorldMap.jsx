@@ -73,14 +73,29 @@ const Land = memo(function Land() {
 /* -------------------------------------------------------------------------- */
 /* Lanes                                                                       */
 /* -------------------------------------------------------------------------- */
-function LaneLayer({ lanes, geometries, activeLanes, colorBy, paused, onSelectLane }) {
+/**
+ * `laneStates` is optional and additive: a map of lane name to a state key
+ * (see networkIntel.LANE_STATES). When absent every lane keeps the original
+ * uniform blue, so every existing caller renders exactly as before.
+ */
+const LANE_STATE_COLOR = {
+  normal: '#3b82f6',
+  optimised: '#34d399',
+  pressure: '#fbbf24',
+  intensive: '#fb923c',
+}
+
+function LaneLayer({ lanes, geometries, activeLanes, colorBy, laneStates, paused, onSelectLane }) {
   return (
     <g>
       {lanes.map((lane) => {
         const geometry = geometries[lane.name]
         if (!geometry) return null
         const active = !activeLanes || activeLanes.has(lane.name)
-        const stroke = colorBy === 'weather' ? beaufortColor(lane.typical_beaufort) : '#3b82f6'
+        const stroke =
+          colorBy === 'weather'
+            ? beaufortColor(lane.typical_beaufort)
+            : LANE_STATE_COLOR[laneStates?.[lane.name]] ?? '#3b82f6'
         return (
           <g key={lane.name} opacity={active ? 1 : 0.18}>
             {/* Wide invisible hit area — a 0.2-unit line is impossible to click. */}
@@ -126,7 +141,7 @@ function LaneLayer({ lanes, geometries, activeLanes, colorBy, paused, onSelectLa
 /* -------------------------------------------------------------------------- */
 /* Ports                                                                       */
 /* -------------------------------------------------------------------------- */
-function PortLayer({ ports, showLabels, scale, activePorts }) {
+function PortLayer({ ports, showLabels, scale, activePorts, onSelectPort }) {
   const r = Math.max(0.22, 0.75 / Math.sqrt(scale))
   const fontSize = Math.max(0.7, 2.6 / Math.sqrt(scale))
   return (
@@ -140,7 +155,21 @@ function PortLayer({ ports, showLabels, scale, activePorts }) {
         // nudge is in degrees, so scale it with the zoom or it vanishes.
         const nudge = dy * Math.max(fontSize / 1.4, 0.35)
         return (
-          <g key={name} opacity={active ? 1 : 0.35}>
+          <g
+            key={name}
+            opacity={active ? 1 : 0.35}
+            style={onSelectPort ? { cursor: 'pointer' } : undefined}
+            onClick={
+              onSelectPort
+                ? (event) => {
+                    event.stopPropagation()
+                    onSelectPort(name)
+                  }
+                : undefined
+            }
+          >
+            {/* A 0.3-unit circle is not a click target; this is. */}
+            {onSelectPort && <circle cx={x} cy={y} r={r * 3.2} fill="transparent" />}
             {active && (
               <circle cx={x} cy={y} fill="none" stroke="#38bdf8" strokeWidth={0.12} className="pulse-ring" />
             )}
@@ -386,16 +415,39 @@ function useMapElement(viewport) {
       // Pixels-per-map-unit fixed for the whole drag, so panning tracks the
       // pointer 1:1 instead of accelerating as the view changes.
       const unitsPerPixel = 1 / Math.min(rect.width / bw, rect.height / bh)
-      dragRef.current = { clientX: event.clientX, clientY: event.clientY, box, unitsPerPixel }
-      event.currentTarget.setPointerCapture?.(event.pointerId)
+      // Deliberately NOT capturing the pointer yet. Capturing on pointerdown
+      // retargets every later pointer event — including the pointerup — to
+      // the <svg>, so the browser fires `click` on the svg rather than on the
+      // vessel, lane or port that was pressed, and every marker in the map
+      // silently stops being clickable. Capture starts on the first real
+      // movement instead (see onPointerMove), which keeps drags working
+      // exactly as before and gives clicks their proper target back.
+      dragRef.current = {
+        clientX: event.clientX,
+        clientY: event.clientY,
+        box,
+        unitsPerPixel,
+        captured: false,
+      }
     },
     [box],
   )
+
+  // Below this, a press is a click, not a drag. Without a threshold the
+  // half-pixel wobble of a normal click would start a pan.
+  const DRAG_THRESHOLD_PX = 3
 
   const onPointerMove = useCallback(
     (event) => {
       const drag = dragRef.current
       if (!drag) return
+      const dx = event.clientX - drag.clientX
+      const dy = event.clientY - drag.clientY
+      if (!drag.captured) {
+        if (Math.abs(dx) < DRAG_THRESHOLD_PX && Math.abs(dy) < DRAG_THRESHOLD_PX) return
+        drag.captured = true
+        event.currentTarget.setPointerCapture?.(event.pointerId)
+      }
       const [bx, by, bw, bh] = drag.box
       setBox([
         bx - (event.clientX - drag.clientX) * drag.unitsPerPixel,
@@ -408,8 +460,9 @@ function useMapElement(viewport) {
   )
 
   const endDrag = useCallback((event) => {
+    const drag = dragRef.current
     dragRef.current = null
-    event.currentTarget.releasePointerCapture?.(event.pointerId)
+    if (drag?.captured) event.currentTarget.releasePointerCapture?.(event.pointerId)
   }, [])
 
   return {
@@ -449,8 +502,10 @@ export default function WorldMap({
   showGraticule = true,
   showEca = false,
   laneColorBy = 'uniform',
+  laneStates,
   paused = false,
   onSelectLane,
+  onSelectPort,
   className,
   children,
 }) {
@@ -490,13 +545,20 @@ export default function WorldMap({
         geometries={geometries}
         activeLanes={activeLanes}
         colorBy={laneColorBy}
+        laneStates={laneStates}
         paused={paused}
         onSelectLane={onSelectLane}
       />
       {showChokepoints && chokepoints.length > 0 && (
         <ChokepointLayer chokepoints={chokepoints} scale={scale} />
       )}
-      <PortLayer ports={ports} showLabels={showPortLabels} scale={scale} activePorts={activePorts} />
+      <PortLayer
+        ports={ports}
+        showLabels={showPortLabels}
+        scale={scale}
+        activePorts={activePorts}
+        onSelectPort={onSelectPort}
+      />
       <MapMetricsContext.Provider value={metrics}>{children}</MapMetricsContext.Provider>
     </svg>
   )

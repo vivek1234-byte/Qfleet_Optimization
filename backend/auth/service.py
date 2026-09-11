@@ -7,14 +7,15 @@ are testable without an HTTP client.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional, Sequence
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from core.errors import ConflictError, NotFoundError, ValidationError
-from db.models import Employee, Role, normalise_employee_id
+from db.models import AuditLog, Employee, Role, normalise_employee_id
 
 from .security import hash_password
 
@@ -91,6 +92,7 @@ def create_employee(
     password: str,
     role: str = Role.EMPLOYEE.value,
     department: str = "",
+    designation: str = "",
     email: Optional[str] = None,
     is_active: bool = True,
 ) -> Employee:
@@ -110,6 +112,7 @@ def create_employee(
         password_hash=hash_password(password),
         role=role,
         department=department or "",
+        designation=designation or "",
         email=email,
         is_active=is_active,
     )
@@ -149,7 +152,7 @@ def update_employee(db: Session, employee: Employee, changes: dict) -> Employee:
                 details={"fields": [{"field": "role", "message": "Last active administrator."}]},
             )
 
-    for field in ("full_name", "department", "role", "email", "is_active"):
+    for field in ("full_name", "department", "designation", "role", "email", "is_active"):
         if field in changes and changes[field] is not None:
             setattr(employee, field, changes[field])
     # `email` is the one field that can legitimately be cleared.
@@ -192,3 +195,47 @@ def delete_employee(db: Session, employee: Employee) -> None:
         )
     db.delete(employee)
     db.commit()
+
+
+def record_login(db: Session, employee: Employee) -> Employee:
+    """Stamp the successful sign-in. Cheap, and the only per-login write."""
+    employee.last_login = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(employee)
+    return employee
+
+
+# ---------------------------------------------------------------------------
+# Audit trail
+# ---------------------------------------------------------------------------
+def record_audit(
+    db: Session,
+    *,
+    actor: str,
+    action: str,
+    target: str = "",
+    result: str = "Success",
+) -> None:
+    """
+    Append one line to the administrator action log.
+
+    Best-effort: an audit write must never be the thing that fails an
+    otherwise-successful administrative action, so a problem here is swallowed
+    rather than rolled back over the change it was recording.
+    """
+    try:
+        db.add(AuditLog(actor=actor, action=action, target=target or "", result=result))
+        db.commit()
+    except Exception:  # pragma: no cover - the log is not load-bearing
+        db.rollback()
+
+
+def list_audit(db: Session, *, limit: int = 100) -> Sequence[AuditLog]:
+    """The most recent administrator actions, newest first."""
+    limit = max(1, min(int(limit), 500))
+    stmt = select(AuditLog).order_by(desc(AuditLog.created_at), desc(AuditLog.id)).limit(limit)
+    return list(db.scalars(stmt).all())
+
+
+def count_audit(db: Session) -> int:
+    return int(db.scalar(select(func.count()).select_from(AuditLog)) or 0)

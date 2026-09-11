@@ -12,9 +12,12 @@
  * the API never returns a hash, so "reset" is the only recovery there is.
  */
 import {
+  Check,
+  Eye,
   KeyRound,
   LogOut,
   Pencil,
+  ScrollText,
   Search,
   ShieldCheck,
   Trash2,
@@ -22,6 +25,7 @@ import {
   UserPlus,
   UserX,
   Users,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -44,6 +48,21 @@ import { useSession } from '../lib/auth'
 
 const EMPTY = []
 
+// What each role can reach. Derived from the role, not stored per-user — the
+// backend enforces exactly this split (employees get a 403 on /api/admin/*),
+// so the matrix is a true picture of access, not a decorative checklist.
+const ACCESS_AREAS = [
+  { key: 'dashboard', label: 'Dashboard', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'fleet', label: 'Fleet & lanes', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'simulation', label: 'Live simulation', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'optimization', label: 'Optimisation', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'compliance', label: 'Compliance', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'prediction', label: 'Fuel prediction', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'scenarios', label: 'Scenarios', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'benchmarks', label: 'Benchmarks', roles: ['ADMIN', 'EMPLOYEE'] },
+  { key: 'employees', label: 'Employee management', roles: ['ADMIN'] },
+]
+
 const ROLE_OPTIONS = [
   { value: 'EMPLOYEE', label: 'Employee — voyage planning and reporting' },
   { value: 'ADMIN', label: 'Administrator — also manages accounts' },
@@ -65,6 +84,7 @@ const BLANK_FORM = {
   employee_id: '',
   full_name: '',
   department: '',
+  designation: '',
   role: 'EMPLOYEE',
   email: '',
   password: '',
@@ -78,6 +98,16 @@ function formatDate(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '—'
   return date.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
+}
+
+/** "12 Sep 2026 · 10:42", or "Never" for an account that has not signed in. */
+function formatDateTime(value) {
+  if (!value) return 'Never'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Never'
+  const day = date.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })
+  const time = date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  return `${day} · ${time}`
 }
 
 function TextField({ label, hint, error, className, ...props }) {
@@ -146,6 +176,7 @@ function EmployeeForm({ mode, initial, busy, serverError, onSubmit, onCancel }) 
       employee_id: form.employee_id.trim().toUpperCase(),
       full_name: form.full_name.trim(),
       department: form.department.trim(),
+      designation: form.designation.trim(),
       email: form.email.trim() || null,
     })
   }
@@ -187,6 +218,15 @@ function EmployeeForm({ mode, initial, busy, serverError, onSubmit, onCancel }) 
           disabled={busy}
           placeholder="Voyage Planning"
           error={errors.department}
+        />
+        <TextField
+          label="Designation"
+          value={form.designation}
+          onChange={set('designation')}
+          disabled={busy}
+          placeholder="Fleet Manager"
+          hint="Job title. Separate from the access role below."
+          error={errors.designation}
         />
         <Select
           label="Role"
@@ -336,6 +376,9 @@ export default function Admin() {
   // 'none' | 'create' | 'edit' | 'reset'
   const [panel, setPanel] = useState('none')
   const [target, setTarget] = useState(null)
+  // The read-only detail drawer overlays everything else, so it has its own
+  // state rather than sharing `panel`.
+  const [viewing, setViewing] = useState(null)
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState(null)
   const [flash, setFlash] = useState(null)
@@ -404,6 +447,7 @@ export default function Admin() {
           employee_id: form.employee_id,
           full_name: form.full_name,
           department: form.department,
+          designation: form.designation,
           role: form.role,
           email: form.email,
           password: form.password,
@@ -418,6 +462,7 @@ export default function Admin() {
         api.admin.updateEmployee(target.id, {
           full_name: form.full_name,
           department: form.department,
+          designation: form.designation,
           role: form.role,
           email: form.email,
           is_active: form.is_active,
@@ -482,14 +527,29 @@ export default function Admin() {
       {
         key: 'full_name',
         header: 'Name',
-        render: (row) => (
-          <span>
-            <span className="block">{row.full_name}</span>
-            {row.email && <span className="text-faint block text-xs">{row.email}</span>}
-          </span>
-        ),
+        render: (row) => <span className="font-medium">{row.full_name}</span>,
+      },
+      {
+        key: 'email',
+        header: 'Email',
+        render: (row) =>
+          row.email ? (
+            <span className="text-body text-xs">{row.email}</span>
+          ) : (
+            <span className="text-faint text-xs">—</span>
+          ),
       },
       { key: 'department', header: 'Department', render: (row) => row.department || '—' },
+      {
+        key: 'designation',
+        header: 'Designation',
+        render: (row) =>
+          row.designation ? (
+            row.designation
+          ) : (
+            <span className="text-faint">—</span>
+          ),
+      },
       {
         key: 'role',
         header: 'Role',
@@ -513,9 +573,13 @@ export default function Admin() {
           ),
       },
       {
-        key: 'created_at',
-        header: 'Added',
-        render: (row) => <span className="text-faint text-xs">{formatDate(row.created_at)}</span>,
+        key: 'last_login',
+        header: 'Last login',
+        render: (row) => (
+          <span className="text-faint whitespace-nowrap text-xs">
+            {formatDateTime(row.last_login)}
+          </span>
+        ),
       },
       {
         key: 'actions',
@@ -525,6 +589,11 @@ export default function Admin() {
           const isSelf = row.id === session?.employee?.id
           return (
             <div className="flex justify-end gap-1">
+              <IconAction
+                label={`View ${row.employee_id}`}
+                icon={Eye}
+                onClick={() => setViewing(row)}
+              />
               <IconAction
                 label={`Edit ${row.employee_id}`}
                 icon={Pencil}
@@ -575,8 +644,8 @@ export default function Admin() {
   return (
     <div>
       <PageHeader
-        title="Employees"
-        description="Who can sign in to Fleet Fuel Optimization, and what they are allowed to do."
+        title="Employee Management"
+        description="Manage workforce access, roles and account status."
         actions={
           <Button
             icon={UserPlus}
@@ -597,9 +666,9 @@ export default function Admin() {
         </Alert>
       )}
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-3">
+      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Accounts"
+          label="Total employees"
           value={data ? String(data.total) : '—'}
           icon={Users}
           accent="primary"
@@ -617,6 +686,13 @@ export default function Admin() {
           value={data ? String(data.admins) : '—'}
           icon={ShieldCheck}
           accent="violet"
+          loading={loading && !data}
+        />
+        <StatCard
+          label="Inactive accounts"
+          value={data ? String(data.inactive) : '—'}
+          icon={UserX}
+          accent="amber"
           loading={loading && !data}
         />
       </div>
@@ -648,6 +724,7 @@ export default function Admin() {
               employee_id: target.employee_id,
               full_name: target.full_name,
               department: target.department ?? '',
+              designation: target.designation ?? '',
               role: target.role,
               email: target.email ?? '',
               is_active: target.is_active,
@@ -734,13 +811,300 @@ export default function Admin() {
         )}
       </Card>
 
+      <AuditPanel flashKey={flash} />
+
       <p className="text-faint mt-6 text-xs leading-relaxed">
         Passwords are stored only as bcrypt hashes and are never returned by the API, so there is
         no way to look one up — only to set a new one. Resetting a password, signing someone out
         and deactivating an account all end every session that person currently has, on every
         device, immediately.
       </p>
+
+      {viewing && (
+        <EmployeeDrawer
+          employee={viewing}
+          isSelf={viewing.id === session?.employee?.id}
+          onClose={() => setViewing(null)}
+          onEdit={() => {
+            setTarget(viewing)
+            setPanel('edit')
+            setFormError(null)
+            setViewing(null)
+          }}
+          onReset={() => {
+            setTarget(viewing)
+            setPanel('reset')
+            setFormError(null)
+            setViewing(null)
+          }}
+          onToggleActive={() => {
+            const employee = viewing
+            setViewing(null)
+            toggleActive(employee)
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Detail drawer                                                               */
+/* -------------------------------------------------------------------------- */
+function DetailRow({ label, children }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 py-1.5">
+      <dt className="text-faint shrink-0 text-xs uppercase tracking-wide">{label}</dt>
+      <dd className="min-w-0 text-right text-sm">{children}</dd>
+    </div>
+  )
+}
+
+/**
+ * Read-only employee profile, as a right-hand drawer.
+ *
+ * The ACCESS block is derived from the role against the same map the backend
+ * enforces — it is a true statement of what this person can reach, not a
+ * cosmetic checklist. No password material appears here; the API never returns
+ * any, so there is none to show.
+ */
+function EmployeeDrawer({ employee, isSelf, onClose, onEdit, onReset, onToggleActive }) {
+  useEffect(() => {
+    const onKey = (event) => event.key === 'Escape' && onClose()
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const initials =
+    (employee.full_name ?? '')
+      .split(' ')
+      .slice(0, 2)
+      .map((part) => part.charAt(0).toUpperCase())
+      .join('') || '?'
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <button
+        type="button"
+        aria-label="Close panel"
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <aside
+        className="animate-fade-in surface relative flex h-full w-full max-w-md flex-col overflow-y-auto border-l shadow-pop"
+        role="dialog"
+        aria-label={`${employee.full_name} profile`}
+      >
+        <header
+          className="flex items-start gap-3 border-b p-5"
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+        >
+          <span
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-primary-600 text-sm font-semibold text-white"
+            aria-hidden
+          >
+            {initials}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-base font-semibold">{employee.full_name}</p>
+            <p className="numeric text-faint text-xs">
+              {employee.employee_id}
+              {isSelf && <span className="ml-2">(you)</span>}
+            </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {employee.role === 'ADMIN' ? (
+                <Badge tone="primary" icon={ShieldCheck}>
+                  Administrator
+                </Badge>
+              ) : (
+                <Badge tone="neutral">Employee</Badge>
+              )}
+              {employee.is_active ? (
+                <Badge tone="eco">Active</Badge>
+              ) : (
+                <Badge tone="danger">Inactive</Badge>
+              )}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close panel"
+            className="rounded-md p-1.5 text-[rgb(var(--text-muted))] transition-colors hover:bg-[rgb(var(--surface-sunken))]"
+          >
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="flex-1 space-y-5 p-5">
+          <section>
+            <h3 className="text-faint mb-1 text-xs font-semibold uppercase tracking-wide">
+              Contact
+            </h3>
+            <dl className="divide-y" style={{ borderColor: 'rgb(var(--border-subtle))' }}>
+              <DetailRow label="Email">{employee.email || '—'}</DetailRow>
+              <DetailRow label="Department">{employee.department || '—'}</DetailRow>
+              <DetailRow label="Designation">{employee.designation || '—'}</DetailRow>
+            </dl>
+          </section>
+
+          <section>
+            <h3 className="text-faint mb-1 text-xs font-semibold uppercase tracking-wide">
+              Account
+            </h3>
+            <dl className="divide-y" style={{ borderColor: 'rgb(var(--border-subtle))' }}>
+              <DetailRow label="Status">{employee.is_active ? 'Active' : 'Inactive'}</DetailRow>
+              <DetailRow label="Last login">
+                <span className="numeric">{formatDateTime(employee.last_login)}</span>
+              </DetailRow>
+              <DetailRow label="Created">
+                <span className="numeric">{formatDate(employee.created_at)}</span>
+              </DetailRow>
+            </dl>
+          </section>
+
+          <section>
+            <h3 className="text-faint mb-2 text-xs font-semibold uppercase tracking-wide">Access</h3>
+            <ul className="space-y-1.5">
+              {ACCESS_AREAS.map((area) => {
+                const allowed = area.roles.includes(employee.role)
+                return (
+                  <li key={area.key} className="flex items-center justify-between gap-3 text-sm">
+                    <span>{area.label}</span>
+                    {allowed ? (
+                      <Check size={16} className="text-eco-500" aria-label="Allowed" />
+                    ) : (
+                      <X size={16} className="text-[rgb(var(--text-muted))]" aria-label="No access" />
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+            <p className="text-faint mt-2 text-xs">
+              Derived from the role and enforced by the server — an employee calling an admin API
+              is refused with 403 regardless of what any screen shows.
+            </p>
+          </section>
+        </div>
+
+        <footer
+          className="flex flex-wrap gap-2 border-t p-4"
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+        >
+          <Button size="sm" icon={Pencil} onClick={onEdit}>
+            Edit
+          </Button>
+          <Button size="sm" variant="secondary" icon={KeyRound} onClick={onReset}>
+            Reset password
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={employee.is_active ? UserX : UserCheck}
+            onClick={onToggleActive}
+            disabled={isSelf && employee.is_active}
+            title={
+              isSelf && employee.is_active ? 'You cannot deactivate your own account' : undefined
+            }
+          >
+            {employee.is_active ? 'Deactivate' : 'Reactivate'}
+          </Button>
+        </footer>
+      </aside>
+    </div>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Audit log                                                                   */
+/* -------------------------------------------------------------------------- */
+/**
+ * A read-only feed of administrator actions. Reloads whenever `flashKey`
+ * changes — that string flips on every successful mutation on this page, so a
+ * newly created or deactivated account shows up in the log without a manual
+ * refresh.
+ */
+function AuditPanel({ flashKey }) {
+  const [entries, setEntries] = useState(EMPTY)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    api.admin
+      .audit({ limit: 40 }, { signal: controller.signal })
+      .then((data) => {
+        setEntries(data.entries ?? EMPTY)
+        setError(null)
+      })
+      .catch((err) => {
+        if (!err?.cancelled) setError(err)
+      })
+      .finally(() => setLoading(false))
+    return () => controller.abort()
+  }, [flashKey])
+
+  return (
+    <Card
+      title="Activity log"
+      description="Administrator actions on accounts, newest first. Never records passwords."
+      className="mt-6"
+      actions={<ScrollText size={16} className="text-faint" aria-hidden />}
+    >
+      {error ? (
+        <ErrorState error={error} />
+      ) : loading && entries.length === 0 ? (
+        <div className="space-y-2">
+          {[0, 1, 2].map((row) => (
+            <Skeleton key={row} className="h-9 w-full" />
+          ))}
+        </div>
+      ) : entries.length === 0 ? (
+        <p className="text-faint py-4 text-center text-sm">
+          No administrator actions recorded yet.
+        </p>
+      ) : (
+        <DataTable
+          columns={[
+            {
+              key: 'created_at',
+              header: 'When',
+              render: (row) => (
+                <span className="text-faint whitespace-nowrap text-xs">
+                  {formatDateTime(row.created_at)}
+                </span>
+              ),
+            },
+            {
+              key: 'actor',
+              header: 'Administrator',
+              render: (row) => <span className="numeric text-sm">{row.actor}</span>,
+            },
+            { key: 'action', header: 'Action', render: (row) => row.action },
+            {
+              key: 'target',
+              header: 'Target',
+              render: (row) =>
+                row.target ? (
+                  <span className="numeric text-sm">{row.target}</span>
+                ) : (
+                  <span className="text-faint">—</span>
+                ),
+            },
+            {
+              key: 'result',
+              header: 'Result',
+              render: (row) => (
+                <Badge tone={row.result === 'Success' ? 'eco' : 'danger'}>{row.result}</Badge>
+              ),
+            },
+          ]}
+          rows={entries}
+          getRowKey={(row) => row.id}
+        />
+      )}
+    </Card>
   )
 }
 

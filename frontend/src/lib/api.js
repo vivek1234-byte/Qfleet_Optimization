@@ -159,6 +159,7 @@ export const api = {
     revokeSessions: (id, config) =>
       post(`/api/admin/employees/${id}/revoke-sessions`, null, config),
     deleteEmployee: (id, config) => del(`/api/admin/employees/${id}`, config),
+    audit: (params, config) => get('/api/admin/audit', { params, ...config }),
   },
 
   optimization: {

@@ -40,7 +40,7 @@ from .schemas import (
     PasswordChangedResponse,
 )
 from .security import create_access_token, dummy_verify, password_problem, verify_password
-from .service import get_by_employee_id, revoke_sessions, set_password
+from .service import get_by_employee_id, record_login, revoke_sessions, set_password
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,9 @@ def login(
         )
 
     ratelimit.note_success(payload.employee_id, address)
+    # Record the sign-in *before* minting the token, so the "last login" the
+    # dashboard shows is this one, not the previous one.
+    record_login(db, employee)
 
     token, expires_at = create_access_token(
         subject=str(employee.id),
