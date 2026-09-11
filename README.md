@@ -21,6 +21,7 @@ and reports a real Pareto front, not a single compromised answer.
 
 ## What it does
 ## All Details
+######
 
 | Module | What it gives you |
 | --- | --- |
