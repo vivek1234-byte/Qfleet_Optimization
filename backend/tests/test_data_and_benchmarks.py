@@ -196,3 +196,58 @@ def test_scalability_builds_a_new_problem_per_size(problem):
 def test_runner_rejects_empty_algorithm_list(problem):
     with pytest.raises(ValueError):
         BenchmarkRunner(problem, [])
+
+
+# ---------------------------------------------------------------------------
+# Fleet registry
+# ---------------------------------------------------------------------------
+from data.fleet_registry import LANES, VESSELS, registry_summary
+from optimization.fleet_problem import build_fleet, build_routes
+
+
+def test_registry_is_well_formed():
+    assert len(VESSELS) >= 12 and len(LANES) >= 8
+    assert len({v.name for v in VESSELS}) == len(VESSELS), "duplicate vessel names"
+    assert len({l.name for l in LANES}) == len(LANES), "duplicate lane names"
+    for v in VESSELS:
+        assert v.min_speed_knots < v.design_speed_knots <= v.max_speed_knots
+        assert v.vessel_type in {"Container", "Bulk Carrier", "Tanker"}
+    for l in LANES:
+        # Transit windows must be reachable at a sensible speed.
+        hours_at_12kn = l.distance_nm / 12.0
+        assert l.max_transit_days * 24 > hours_at_12kn, f"{l.name} window too tight"
+
+
+def test_fleet_uses_real_names():
+    fleet = build_fleet(6, seed=1)
+    names = {v.name for v in VESSELS}
+    assert all(v.name in names for v in fleet)
+    assert not any(v.name.startswith(("CON-", "BUL-", "TAN-")) for v in fleet)
+    assert all(v.home_port for v in fleet)
+
+
+def test_fleet_keeps_a_class_mix():
+    fleet = build_fleet(9, seed=3)
+    assert {v.vessel_type for v in fleet} == {"Container", "Bulk Carrier", "Tanker"}
+
+
+def test_fleet_wraps_past_registry_size():
+    fleet = build_fleet(len(VESSELS) + 3, seed=0)
+    assert len(fleet) == len(VESSELS) + 3
+    assert len({v.name for v in fleet}) == len(fleet), "wrapped names must stay unique"
+    assert any(v.name.endswith(" II") for v in fleet)
+
+
+def test_routes_are_real_lanes_busiest_first():
+    routes = build_routes(3, n_vessels=10, seed=42)
+    lane_names = {l.name for l in LANES}
+    assert all(r.name in lane_names for r in routes)
+    assert all(r.origin and r.destination for r in routes)
+    weights = {l.name: l.demand_weight for l in LANES}
+    assert weights[routes[0].name] >= weights[routes[-1].name]
+
+
+def test_registry_summary_shape():
+    summary = registry_summary()
+    assert summary["vessel_count"] == len(VESSELS)
+    assert {"name", "origin_code", "destination_code", "distance_nm"} <= set(summary["lanes"][0])

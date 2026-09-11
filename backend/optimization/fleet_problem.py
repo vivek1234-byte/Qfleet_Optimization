@@ -29,8 +29,10 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 
 try:  # package import
+    from ..data.fleet_registry import LANES, VESSELS
     from ..data.fuel_database import FuelType, get_all_fuels, resolve_fuels
 except ImportError:  # pragma: no cover - direct script execution
+    from data.fleet_registry import LANES, VESSELS
     from data.fuel_database import FuelType, get_all_fuels, resolve_fuels
 
 OBJECTIVE_NAMES = ("fuel_consumption_tons", "co2_emissions_tons", "operational_cost_usd")
@@ -66,12 +68,16 @@ class VesselProfile:
     hotel_load_kw: float
     tank_volume_m3: float
     port_hours: float = 36.0
+    home_port: str = ""
+    built: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "vessel_id": self.vessel_id,
             "name": self.name,
             "vessel_type": self.vessel_type,
+            "home_port": self.home_port,
+            "built": self.built,
             "dwt": round(self.dwt, 1),
             "rated_power_kw": round(self.rated_power_kw, 1),
             "design_speed_knots": round(self.design_speed_knots, 2),
@@ -96,11 +102,19 @@ class RouteProfile:
     #: Latest acceptable transit time, days.
     max_transit_days: float
     shore_power_available: bool = True
+    origin: str = ""
+    destination: str = ""
+    via: str = ""
+    cargo: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "route_id": self.route_id,
             "name": self.name,
+            "origin": self.origin,
+            "destination": self.destination,
+            "via": self.via or None,
+            "cargo": self.cargo,
             "distance_nm": round(self.distance_nm, 1),
             "weather_beaufort": round(self.weather_beaufort, 2),
             "demand_tons": round(self.demand_tons, 1),
@@ -112,85 +126,93 @@ class RouteProfile:
 # ---------------------------------------------------------------------------
 # Deterministic fleet / network generation
 # ---------------------------------------------------------------------------
-_VESSEL_TEMPLATES = [
-    # type,          dwt range,        power range,      design, min,  max,  tank m3
-    ("Container", 50_000, 150_000, 20_000, 60_000, 20.0, 12.0, 24.0, 9_000),
-    ("Bulk Carrier", 30_000, 100_000, 8_000, 25_000, 14.0, 9.0, 16.0, 4_500),
-    ("Tanker", 80_000, 200_000, 15_000, 45_000, 15.0, 10.0, 17.5, 6_500),
-]
+# Vessels and lanes come from data/fleet_registry.py — a curated set of
+# plausible Indian-flag ships and the trade lanes India's ports actually serve.
+# Generation is still deterministic per seed: the seed picks which registry
+# entries are used and in what order, plus the small per-run variation in
+# cargo load and port stay that keeps repeated demos from looking identical.
+#
+# Asking for more vessels or lanes than the registry holds wraps around with a
+# roman-numeral suffix (e.g. "MV Sagar Pratap II") so large stress tests still
+# work without inventing meaningless placeholder names.
 
-_ROUTE_TEMPLATES = [
-    ("Asia - Europe", 11_000, 4.2, 30),
-    ("Trans-Pacific", 7_000, 4.8, 22),
-    ("Trans-Atlantic", 3_500, 4.5, 12),
-    ("Intra-Asia", 1_500, 3.4, 6),
-    ("Middle East - Asia", 5_000, 3.9, 16),
-    ("Europe - South America", 6_200, 4.1, 19),
-    ("US Gulf - Europe", 5_400, 4.6, 17),
-    ("Australia - Asia", 4_100, 4.0, 14),
-]
+_ROMAN = ["", " II", " III", " IV", " V", " VI", " VII", " VIII"]
+
+
+def _suffix(index: int, size: int) -> str:
+    round_ = index // size
+    return _ROMAN[round_] if round_ < len(_ROMAN) else f" #{round_ + 1}"
 
 
 def build_fleet(n_vessels: int, seed: int = 42) -> List[VesselProfile]:
-    """Create a reproducible synthetic fleet of ``n_vessels`` ships."""
+    """Draw ``n_vessels`` ships from the registry, reproducibly for a seed."""
     rng = np.random.default_rng(seed)
+    # A seeded permutation so different seeds yield different fleets, while the
+    # same seed always yields the same one. A balanced class mix is kept by
+    # permuting within type groups and interleaving.
+    by_type: Dict[str, List[int]] = {}
+    for idx, spec in enumerate(VESSELS):
+        by_type.setdefault(spec.vessel_type, []).append(idx)
+    order: List[int] = []
+    groups = [list(rng.permutation(v)) for v in by_type.values()]
+    while any(groups):
+        for g in groups:
+            if g:
+                order.append(int(g.pop(0)))
+
     fleet: List[VesselProfile] = []
     for i in range(n_vessels):
-        (
-            vtype,
-            dwt_lo,
-            dwt_hi,
-            pw_lo,
-            pw_hi,
-            design,
-            v_min,
-            v_max,
-            tank,
-        ) = _VESSEL_TEMPLATES[i % len(_VESSEL_TEMPLATES)]
-        dwt = float(rng.uniform(dwt_lo, dwt_hi))
-        # Larger ships within a class carry proportionally more installed power.
-        power_frac = (dwt - dwt_lo) / max(dwt_hi - dwt_lo, 1.0)
-        rated = float(pw_lo + power_frac * (pw_hi - pw_lo) * rng.uniform(0.85, 1.15))
+        spec = VESSELS[order[i % len(order)]]
         fleet.append(
             VesselProfile(
                 vessel_id=i,
-                name=f"{vtype[:3].upper()}-{i + 1:03d}",
-                vessel_type=vtype,
-                dwt=dwt,
-                rated_power_kw=max(rated, pw_lo * 0.8),
-                design_speed_knots=design,
-                min_speed_knots=v_min,
-                max_speed_knots=v_max,
-                cargo_load_pct=float(rng.uniform(55.0, 100.0)),
-                hotel_load_kw=float(rng.uniform(600.0, 1_800.0)),
-                tank_volume_m3=float(tank),
-                port_hours=float(rng.uniform(24.0, 60.0)),
+                name=f"{spec.name}{_suffix(i, len(order))}",
+                vessel_type=spec.vessel_type,
+                dwt=float(spec.dwt),
+                rated_power_kw=float(spec.rated_power_kw),
+                design_speed_knots=float(spec.design_speed_knots),
+                min_speed_knots=float(spec.min_speed_knots),
+                max_speed_knots=float(spec.max_speed_knots),
+                cargo_load_pct=float(rng.uniform(60.0, 98.0)),
+                hotel_load_kw=float(spec.hotel_load_kw),
+                tank_volume_m3=float(spec.tank_volume_m3),
+                port_hours=float(rng.uniform(28.0, 56.0)),
+                home_port=spec.home_port,
+                built=spec.built,
             )
         )
     return fleet
 
 
 def build_routes(n_routes: int, n_vessels: int, seed: int = 42) -> List[RouteProfile]:
-    """Create a reproducible route network with demand scaled to the fleet."""
+    """Draw ``n_routes`` trade lanes from the registry with demand scaled to the fleet."""
     rng = np.random.default_rng(seed + 1)
-    routes: List[RouteProfile] = []
+    # Busiest lanes first so a small demo network is JNPT–Singapore and
+    # JNPT–Jebel Ali rather than Haldia–Yangon.
+    ranked = sorted(range(len(LANES)), key=lambda i: -LANES[i].demand_weight)
+
     # Total demand is set so a well-assigned fleet can just about cover it.
     per_vessel_capacity = 55_000.0
     total_demand = per_vessel_capacity * n_vessels * 0.75
-    weights = rng.uniform(0.6, 1.4, size=n_routes)
+    chosen = [LANES[ranked[i % len(ranked)]] for i in range(n_routes)]
+    weights = np.array([l.demand_weight for l in chosen]) * rng.uniform(0.9, 1.1, size=n_routes)
     weights = weights / weights.sum()
-    for i in range(n_routes):
-        name, distance, beaufort, transit = _ROUTE_TEMPLATES[i % len(_ROUTE_TEMPLATES)]
-        suffix = f" #{i // len(_ROUTE_TEMPLATES) + 1}" if i >= len(_ROUTE_TEMPLATES) else ""
+
+    routes: List[RouteProfile] = []
+    for i, lane in enumerate(chosen):
         routes.append(
             RouteProfile(
                 route_id=i,
-                name=f"{name}{suffix}",
-                distance_nm=float(distance * rng.uniform(0.95, 1.05)),
-                weather_beaufort=float(np.clip(beaufort * rng.uniform(0.9, 1.1), 1.0, 9.0)),
+                name=f"{lane.name}{_suffix(i, len(ranked))}",
+                distance_nm=float(lane.distance_nm),
+                weather_beaufort=float(np.clip(lane.weather_beaufort * rng.uniform(0.92, 1.08), 1.0, 9.0)),
                 demand_tons=float(total_demand * weights[i]),
-                max_transit_days=float(transit),
-                shore_power_available=bool(rng.random() > 0.25),
+                max_transit_days=float(lane.max_transit_days),
+                shore_power_available=lane.shore_power_available,
+                origin=lane.origin,
+                destination=lane.destination,
+                via=lane.via,
+                cargo=lane.cargo,
             )
         )
     return routes

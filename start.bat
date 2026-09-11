@@ -1,17 +1,19 @@
 @echo off
 REM ===================================================================
-REM  Quantum Green Fleet - one-click local launcher (Windows)
+REM  QFleet - one-click launcher (Windows)
 REM
 REM  Sets up the Python venv, installs dependencies, trains the model
-REM  if needed, then starts the API and the UI in two new windows.
-REM  Safe to run repeatedly - it skips work that is already done.
+REM  if needed, installs the frontend packages, then starts the API in
+REM  its own window and the web UI in this one. Safe to run repeatedly.
+REM
+REM  Run start-backend-only.bat instead if you just want the API.
 REM ===================================================================
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo.
 echo  ==========================================================
-echo   Quantum Green Fleet - starting local development stack
+echo   QFleet - starting API + web UI
 echo  ==========================================================
 echo.
 
@@ -58,57 +60,72 @@ if errorlevel 1 (
 REM ---- 4. Dataset and model ------------------------------------------
 if not exist "backend\data\datasets\voyage_data.csv" (
     echo [4/6] Generating the voyage dataset and training the model...
-    python train_model.py --generate 10000
+    python train_model.py --generate 20000
 ) else (
     if not exist "backend\prediction\saved_models\xgboost_model.pkl" (
         echo [4/6] Training the fuel-prediction model...
         python train_model.py
     ) else (
         echo [4/6] Dataset and model present.
-        echo       ^(If /predict returns a format-version error, run: python train_model.py^)
     )
 )
 
-REM ---- 5. Backend ------------------------------------------------------
-echo [5/6] Starting the API on http://localhost:8000 ...
-start "Quantum Green Fleet API" cmd /k "cd /d "%~dp0backend" && "%~dp0venv\Scripts\python.exe" -m uvicorn main:app --reload --port 8000"
-
-REM ---- 6. Frontend -----------------------------------------------------
+REM ---- 5. Frontend dependencies --------------------------------------
 where npm >nul 2>nul
 if errorlevel 1 (
     echo.
-    echo [WARN] npm is not on your PATH, so the UI was not started.
-    echo        Install Node.js from https://nodejs.org, then run:
-    echo            cd frontend ^&^& npm install ^&^& npm run dev
+    echo [WARN] Node.js / npm is not on your PATH, so the web UI cannot start.
+    echo        Install Node 18+ from https://nodejs.org and re-run, or use
+    echo        start-backend-only.bat and the API docs at /docs.
     echo.
-    echo The API is still starting at http://localhost:8000/docs
+    set SKIP_UI=1
+) else (
+    if not exist "frontend\node_modules" (
+        echo [5/6] Installing frontend packages ^(first run only, a minute or two^)...
+        pushd frontend
+        call npm install
+        if errorlevel 1 (
+            echo [ERROR] npm install failed. See the output above.
+            popd
+            pause
+            exit /b 1
+        )
+        popd
+    ) else (
+        echo [5/6] Frontend packages already installed.
+    )
+)
+
+REM ---- 6. Start ------------------------------------------------------
+REM --host is explicit on purpose: both servers bind to localhost only, so
+REM nothing on the venue Wi-Fi can reach them. Change to 0.0.0.0 only for a
+REM deliberate deployment behind a reverse proxy, never on a shared network.
+echo [6/6] Starting the API in a separate window...
+start "QFleet API" cmd /k "cd /d "%~dp0" && call venv\Scripts\activate.bat && cd backend && python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000"
+
+if defined SKIP_UI (
+    echo.
+    echo  ==========================================================
+    echo     API      http://localhost:8000
+    echo     API docs http://localhost:8000/docs
+    echo  ==========================================================
     pause
     exit /b 0
 )
 
-if not exist "frontend\node_modules" (
-    echo [6/6] Installing frontend dependencies...
-    pushd frontend
-    call npm install
-    popd
-) else (
-    echo [6/6] Frontend dependencies already installed.
-)
-
-start "Quantum Green Fleet UI" cmd /k "cd /d "%~dp0frontend" && npm run dev"
+echo     Waiting for the API to come up...
+timeout /t 6 /nobreak >nul
 
 echo.
 echo  ==========================================================
-echo   Both servers are starting in their own windows.
-echo.
-echo     UI       http://localhost:5173
+echo     Web UI   http://localhost:5173     ^<-- open this
 echo     API      http://localhost:8000
 echo     API docs http://localhost:8000/docs
 echo.
-echo   Close those two windows to stop the servers.
+echo   Close this window or press Ctrl+C to stop the web UI.
+echo   The API runs in the other window.
 echo  ==========================================================
 echo.
 
-timeout /t 12 /nobreak >nul
-start "" http://localhost:5173
-exit /b 0
+cd frontend
+call npm run dev

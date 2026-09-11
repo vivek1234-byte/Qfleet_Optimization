@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="theme-color" content="#0b101a" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
+    <meta
+      name="description"
+      content="QFleet — quantum-inspired multi-objective optimisation, live voyage simulation, fuel-consumption prediction and transition scenario analysis for maritime fleets."
+    />
+    <title>QFleet · Maritime Fleet Optimisation</title>
+    <script>
+      // Apply the stored theme before first paint so a dark-mode user never
+      // sees a white flash on load.
+      try {
+        var stored = localStorage.getItem('qfleet-theme')
+        var dark =
+          stored === 'dark' ||
+          (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches)
+        if (dark) document.documentElement.classList.add('dark')
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <p style="font-family: system-ui; padding: 2rem">QFleet needs JavaScript enabled to run.</p>
+    </noscript>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

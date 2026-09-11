@@ -22,8 +22,10 @@ import numpy as np
 import pandas as pd
 
 try:
+    from .fleet_registry import LANES
     from .fuel_database import FuelType, get_all_fuels
 except ImportError:  # pragma: no cover
+    from fleet_registry import LANES
     from fuel_database import FuelType, get_all_fuels
 
 logger = logging.getLogger(__name__)
@@ -48,16 +50,13 @@ VESSEL_SPECS: List[VesselSpec] = [
     VesselSpec("Tanker", 80_000, 200_000, 15_000, 45_000, 12.0, 17.5),
 ]
 
+# Trade lanes come from the shared registry so the training data, the
+# optimiser and the API all describe the same network.
 ROUTES: List[Dict[str, Any]] = [
-    {"name": "Asia-Europe", "distance_nm": 11_000},
-    {"name": "Trans-Pacific", "distance_nm": 7_000},
-    {"name": "Trans-Atlantic", "distance_nm": 3_500},
-    {"name": "Intra-Asia", "distance_nm": 1_500},
-    {"name": "Middle East-Asia", "distance_nm": 5_000},
+    {"name": lane.name, "distance_nm": lane.distance_nm, "beaufort": lane.weather_beaufort}
+    for lane in LANES
 ]
 
-BEAUFORT_LEVELS = np.array([1, 2, 3, 4, 5, 6, 7, 8])
-BEAUFORT_WEIGHTS = np.array([0.05, 0.10, 0.25, 0.30, 0.20, 0.05, 0.03, 0.02])
 
 
 def generate_dataset(n_records: int = 10_000, seed: Optional[int] = 42) -> pd.DataFrame:
@@ -91,7 +90,10 @@ def generate_dataset(n_records: int = 10_000, seed: Optional[int] = 42) -> pd.Da
     distance_nm = route_distance * rng.uniform(0.95, 1.05, n_records)
 
     cargo_load_pct = rng.uniform(30.0, 100.0, n_records)
-    weather_beaufort = rng.choice(BEAUFORT_LEVELS, size=n_records, p=BEAUFORT_WEIGHTS)
+    # Sea state is drawn around each lane's typical Beaufort, clipped to 1–8,
+    # so monsoon-exposed lanes are rougher on average than sheltered ones.
+    lane_bft = np.array([ROUTES[i]["beaufort"] for i in route_idx], dtype=float)
+    weather_beaufort = np.clip(np.rint(rng.normal(lane_bft, 1.1)), 1, 8).astype(int)
     draft_meters = (10.0 + (cargo_load_pct / 100.0) * 5.0) * rng.uniform(0.95, 1.05, n_records)
 
     sfc_mult = np.array([fuels[i].sfc_multiplier for i in fuel_idx])

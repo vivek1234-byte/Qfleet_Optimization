@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ===================================================================
-#  Quantum Green Fleet - one-click local launcher (macOS / Linux / WSL)
+#  QFleet - one-click launcher (macOS / Linux / WSL)
 #
-#  Sets up the Python venv, installs dependencies, trains the model if
-#  needed, then runs the API and the UI together. Ctrl-C stops both.
+#  Brings up the API and the web UI together. Ctrl+C stops both.
+#  Pass --api-only to skip the web UI.
 # ===================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -11,62 +11,84 @@ cd "$(dirname "$0")"
 say() { printf '\n\033[1;36m%s\033[0m\n' "$*"; }
 die() { printf '\n\033[1;31m[ERROR] %s\033[0m\n' "$*" >&2; exit 1; }
 
-say "Quantum Green Fleet - starting local development stack"
+API_ONLY=0
+[ "${1:-}" = "--api-only" ] && API_ONLY=1
 
-# ---- 1. Python -------------------------------------------------------
+say "QFleet - starting"
+
 PYTHON="$(command -v python3 || command -v python || true)"
 [ -n "$PYTHON" ] || die "Python 3.9+ is required but was not found on PATH."
-echo "[1/6] $($PYTHON --version)"
+echo "[1/5] $($PYTHON --version)"
 
-# ---- 2. Virtual environment -----------------------------------------
 if [ ! -d venv ]; then
-  echo "[2/6] Creating virtual environment..."
+  echo "[2/5] Creating virtual environment..."
   "$PYTHON" -m venv venv
 else
-  echo "[2/6] Virtual environment already exists."
+  echo "[2/5] Virtual environment already exists."
 fi
 # shellcheck disable=SC1091
 source venv/bin/activate
 
-# ---- 3. Python dependencies -----------------------------------------
 if ! python -c "import fastapi, xgboost, sklearn, pandas" >/dev/null 2>&1; then
-  echo "[3/6] Installing Python dependencies (this takes a few minutes)..."
+  echo "[3/5] Installing Python dependencies (this takes a few minutes)..."
   python -m pip install --upgrade pip --quiet
   python -m pip install -r backend/requirements.txt
 else
-  echo "[3/6] Python dependencies already installed."
+  echo "[3/5] Python dependencies already installed."
 fi
 
-# ---- 4. Dataset and model -------------------------------------------
 if [ ! -f backend/data/datasets/voyage_data.csv ]; then
-  echo "[4/6] Generating the voyage dataset and training the model..."
-  python train_model.py --generate 10000
+  echo "[4/5] Generating the voyage dataset and training the model..."
+  python train_model.py --generate 20000
 elif [ ! -f backend/prediction/saved_models/xgboost_model.pkl ]; then
-  echo "[4/6] Training the fuel-prediction model..."
+  echo "[4/5] Training the fuel-prediction model..."
   python train_model.py
 else
-  echo "[4/6] Dataset and model present."
+  echo "[4/5] Dataset and model present."
 fi
 
-# ---- 5 & 6. Servers --------------------------------------------------
-cleanup() { echo; echo "Stopping servers..."; kill 0 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
+# --host is explicit on purpose: both servers bind to localhost only, so
+# nothing on the venue Wi-Fi can reach them. Change to 0.0.0.0 only for a
+# deliberate deployment behind a reverse proxy, never on a shared network.
+echo "[5/5] Starting the API..."
+(cd backend && python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000) &
+API_PID=$!
 
-echo "[5/6] Starting the API on http://localhost:8000 ..."
-( cd backend && python -m uvicorn main:app --reload --port 8000 ) &
+# Kill the API (and the UI, if started) on Ctrl+C rather than orphaning them.
+UI_PID=""
+cleanup() {
+  trap - INT TERM EXIT
+  [ -n "$UI_PID" ] && kill "$UI_PID" 2>/dev/null || true
+  kill "$API_PID" 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap cleanup INT TERM EXIT
 
-if command -v npm >/dev/null 2>&1; then
-  [ -d frontend/node_modules ] || ( echo "[6/6] Installing frontend dependencies..." && cd frontend && npm install )
-  echo "[6/6] Starting the UI on http://localhost:5173 ..."
-  ( cd frontend && npm run dev ) &
-else
-  echo "[WARN] npm not found - the UI was not started. Install Node.js from https://nodejs.org"
+if [ "$API_ONLY" -eq 1 ] || ! command -v npm >/dev/null 2>&1; then
+  if [ "$API_ONLY" -eq 0 ]; then
+    printf '\n\033[1;33m[WARN] npm not found, so the web UI is not starting. Install Node 18+.\033[0m\n'
+  fi
+  say "API      http://localhost:8000
+API docs http://localhost:8000/docs
+Health   http://localhost:8000/api/health
+
+Press Ctrl+C to stop."
+  wait "$API_PID"
+  exit 0
 fi
 
-say "UI       http://localhost:5173
+if [ ! -d frontend/node_modules ]; then
+  echo "      Installing frontend packages (first run only)..."
+  (cd frontend && npm install)
+fi
+
+sleep 4
+say "Web UI   http://localhost:5173     <-- open this
 API      http://localhost:8000
 API docs http://localhost:8000/docs
 
-Press Ctrl-C to stop both servers."
+Press Ctrl+C to stop both."
 
-wait
+(cd frontend && npm run dev) &
+UI_PID=$!
+wait "$UI_PID"

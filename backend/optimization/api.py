@@ -18,12 +18,14 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 try:
     from ..config import settings
     from ..core.errors import ComputationError, ValidationError
+    from ..data.fleet_registry import registry_summary
     from ..data.fuel_database import fuel_names, get_fuel
     from .engine import ALGORITHM_IDS, list_algorithms, optimize, run_algorithm, summarise_run
     from .fleet_problem import OBJECTIVE_NAMES, FleetOptimizationProblem
 except ImportError:  # pragma: no cover
     from config import settings
     from core.errors import ComputationError, ValidationError
+    from data.fleet_registry import registry_summary
     from data.fuel_database import fuel_names, get_fuel
     from optimization.engine import (
         ALGORITHM_IDS,
@@ -139,6 +141,18 @@ class CompareRequest(FleetConfig):
 def get_algorithms() -> List[Dict[str, Any]]:
     """The solvers this build can run, with their capabilities."""
     return list_algorithms()
+
+
+@router.get("/registry")
+def get_registry() -> Dict[str, Any]:
+    """
+    The full vessel and trade-lane registry the problem builder draws from.
+
+    Vessels are fictional Indian-flag ships across three classes; lanes are
+    real port pairs with published sea distances (Suez for Europe, Malacca for
+    East Asia). Useful for showing a jury exactly what is being scheduled.
+    """
+    return registry_summary()
 
 
 @router.get("/fleet")
