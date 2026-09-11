@@ -73,6 +73,16 @@ class Employee(Base):
     # losing who it was.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
+    # Bumped whenever every existing session for this person must stop working:
+    # a password change, or an administrator forcing a sign-out. The number is
+    # copied into each token as `tv` and compared on every request, which is
+    # what turns a stateless token into a revocable one without a session
+    # table. Without it, "change your password" does not end a stolen session —
+    # the thief keeps working until the token expires on its own.
+    token_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
     )

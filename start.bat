@@ -121,7 +121,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-"%PY%" -m backend.manage seed
+REM --force because this launcher IS the development entry point. A real
+REM deployment uses `bootstrap`, and plain `seed` refuses outside debug.
+"%PY%" -m backend.manage seed --force
 
 REM ---- 6. Frontend dependencies --------------------------------------
 where npm >nul 2>nul

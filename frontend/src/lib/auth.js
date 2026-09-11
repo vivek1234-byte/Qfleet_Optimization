@@ -233,7 +233,10 @@ export async function revalidate() {
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       clearStored()
-      setState({ session: null, status: 'anonymous' })
+      // Carry the server's reason to the login screen. Without this a
+      // revoked or expired session lands on /login with no explanation,
+      // which reads as the app having logged you out at random.
+      setState({ session: null, status: 'anonymous', expiryNotice: error.message })
       return null
     }
     // Network or server trouble: keep the session and let the pages show

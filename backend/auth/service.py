@@ -162,7 +162,24 @@ def update_employee(db: Session, employee: Employee, changes: dict) -> Employee:
 
 
 def set_password(db: Session, employee: Employee, new_password: str) -> Employee:
+    """
+    Replace the password and end every session that used the old one.
+
+    The second half is not optional. Someone changing their password because
+    they think it was stolen is doing it to lock the thief out; leaving the
+    thief's token working for another twelve hours defeats the entire point of
+    the action.
+    """
     employee.password_hash = hash_password(new_password)
+    employee.token_version = int(employee.token_version or 0) + 1
+    db.commit()
+    db.refresh(employee)
+    return employee
+
+
+def revoke_sessions(db: Session, employee: Employee) -> Employee:
+    """End every session for this employee without touching their password."""
+    employee.token_version = int(employee.token_version or 0) + 1
     db.commit()
     db.refresh(employee)
     return employee

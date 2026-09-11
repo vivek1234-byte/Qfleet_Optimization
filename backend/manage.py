@@ -40,9 +40,11 @@ from auth.service import (  # noqa: E402
     delete_employee,
     get_by_employee_id,
     list_employees,
+    revoke_sessions,
     set_password,
     update_employee,
 )
+from auth.security import password_problem  # noqa: E402
 from core.errors import AppError  # noqa: E402
 from db.base import Base  # noqa: E402
 from db.models import Employee, Role, normalise_employee_id  # noqa: E402
@@ -75,11 +77,12 @@ def _require_schema() -> None:
         )
 
 
-def _prompt_password(label: str = "Password") -> str:
+def _prompt_password(label: str = "Password", *, employee_id: str = "", full_name: str = "") -> str:
     while True:
         first = getpass.getpass(f"{label}: ")
-        if len(first) < settings.PASSWORD_MIN_LENGTH:
-            print(f"  Too short — at least {settings.PASSWORD_MIN_LENGTH} characters.")
+        problem = password_problem(first, employee_id=employee_id, full_name=full_name)
+        if problem:
+            print(f"  {problem}")
             continue
         if first != getpass.getpass("Confirm: "):
             print("  They do not match. Try again.")
@@ -181,6 +184,18 @@ def cmd_bootstrap(args) -> None:
 def cmd_seed(args) -> None:
     """Insert the demo employees, skipping any that already exist."""
     _require_schema()
+
+    # The demo passwords are printed in this file, in the README and in a
+    # public repository. Creating those accounts against a real database would
+    # hand anyone who has read the repo an administrator login, so `seed`
+    # refuses unless the deployment has declared itself a development one.
+    if not settings.DEBUG and not args.force:
+        _die(
+            "refusing to seed demo accounts outside development.\n"
+            "       The seeded passwords are published in this repository.\n"
+            "       For a real deployment:  python -m backend.manage bootstrap\n"
+            "       To seed anyway:         set QGF_DEBUG=true, or pass --force"
+        )
     created, skipped = [], []
     with session_scope() as db:
         for employee_id, name, role, department, email, password in DEMO_EMPLOYEES:
@@ -276,6 +291,14 @@ def cmd_role(args) -> None:
         print(f"{employee.employee_id} is now {args.role}.")
 
 
+def cmd_revoke(args) -> None:
+    _require_schema()
+    with session_scope() as db:
+        employee = _lookup(db, args.employee_id)
+        revoke_sessions(db, employee)
+        print(f"{employee.employee_id} has been signed out on every device.")
+
+
 def cmd_delete(args) -> None:
     _require_schema()
     with session_scope() as db:
@@ -326,7 +349,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="Create even if an administrator exists")
     p.set_defaults(func=cmd_bootstrap)
 
-    sub.add_parser("seed", help="Insert demo employees").set_defaults(func=cmd_seed)
+    p = sub.add_parser("seed", help="Insert demo employees (development only)")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Seed even outside development. The passwords are public; be sure.",
+    )
+    p.set_defaults(func=cmd_seed)
 
     p = sub.add_parser("list", help="List employees")
     p.add_argument("--search", help="Filter by ID, name, department or email")
@@ -358,6 +387,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("employee_id")
     p.add_argument("role", choices=Role.values())
     p.set_defaults(func=cmd_role)
+
+    p = sub.add_parser("revoke", help="Sign an employee out of every device")
+    p.add_argument("employee_id")
+    p.set_defaults(func=cmd_revoke)
 
     p = sub.add_parser("delete", help="Delete an employee")
     p.add_argument("employee_id")

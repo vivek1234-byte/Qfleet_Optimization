@@ -89,6 +89,7 @@ def create_access_token(
     subject: str,
     employee_id: str,
     role: str,
+    token_version: int = 0,
     expires_minutes: Optional[int] = None,
 ) -> tuple[str, datetime]:
     """
@@ -105,6 +106,10 @@ def create_access_token(
         "sub": str(subject),
         "eid": employee_id,
         "role": role,
+        # The revocation counter. Compared against the row on every request,
+        # so bumping it in the database invalidates every token already out
+        # there — see db/models.Employee.token_version.
+        "tv": int(token_version),
         "iat": int(now.timestamp()),
         "exp": int(expires_at.timestamp()),
         "iss": "qfleet",
@@ -131,3 +136,70 @@ def decode_access_token(token: str) -> Dict[str, Any]:
 
 def constant_time_equals(left: str, right: str) -> bool:
     return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Password quality
+# ---------------------------------------------------------------------------
+# A length floor alone lets "password" and "12345678" through, and those are
+# the first two guesses anyone makes. This is not a strength meter and not a
+# character-class rule — NIST dropped composition rules years ago because they
+# push people towards "Password1!" — it is a blocklist of the passwords that
+# actually appear at the top of every breach corpus, plus the shapes this
+# particular deployment invites.
+#
+# A real deployment should check against a downloaded breach list (or the
+# k-anonymity range API of one) instead. This is the offline version that
+# works at a venue with no network.
+COMMON_PASSWORDS = frozenset(
+    {
+        "password", "password1", "password123", "passw0rd", "p@ssw0rd", "p@ssword",
+        "12345678", "123456789", "1234567890", "qwerty123", "qwertyui", "1q2w3e4r",
+        "iloveyou", "sunshine", "princess", "football", "baseball", "superman",
+        "trustno1", "welcome1", "welcome123", "admin123", "administrator",
+        "letmein1", "letmein123", "monkey123", "dragon123", "abc12345",
+        "changeme", "changeme123", "default1", "secret123", "temp1234",
+        # Shapes this project invites specifically.
+        "qfleet123", "fleet1234", "employee1", "employee123", "shipping1",
+    }
+)
+
+
+def password_problem(password: str, *, employee_id: str = "", full_name: str = "") -> Optional[str]:
+    """
+    Why this password is unacceptable, or None if it is fine.
+
+    Checks the three things that matter and none of the things that do not:
+    length, whether it is a password everyone tries, and whether it is just
+    the account's own name or ID — which is the most common weak password in
+    any staff system and one no generic blocklist catches.
+    """
+    if not password:
+        return "Password is required."
+
+    if len(password) < settings.PASSWORD_MIN_LENGTH:
+        return f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters."
+
+    if len(password.encode("utf-8")) > BCRYPT_MAX_BYTES:
+        return f"Password must be at most {BCRYPT_MAX_BYTES} bytes."
+
+    lowered = password.lower()
+
+    if lowered in COMMON_PASSWORDS:
+        return "That password appears on every list attackers try. Choose another."
+
+    # Strip digits and punctuation before comparing, so "EMP001!" and
+    # "priyanair2026" are caught alongside the bare forms.
+    stripped = "".join(ch for ch in lowered if ch.isalpha())
+    if employee_id and stripped and stripped == employee_id.lower().replace("-", "").replace("_", ""):
+        return "The password cannot be the Employee ID."
+    if employee_id and employee_id.lower() in lowered:
+        return "The password cannot contain the Employee ID."
+    for part in str(full_name or "").lower().split():
+        if len(part) >= 4 and part in lowered:
+            return "The password cannot contain the employee's name."
+
+    if len(set(password)) < 4:
+        return "That password repeats too few different characters."
+
+    return None

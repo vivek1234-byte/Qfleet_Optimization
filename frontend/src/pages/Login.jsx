@@ -12,7 +12,7 @@
  * happens to the token it returns.
  */
 import { Eye, EyeOff, Moon, Sun } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Alert, cx } from '../components/ui'
@@ -138,6 +138,10 @@ export default function Login() {
   const [ownNotice, setOwnNotice] = useState(null)
   const [failure, setFailure] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [capsLock, setCapsLock] = useState(false)
+  // Seconds left on a server-side lockout. Counts down so the user has a
+  // number to wait out instead of retrying into a wall.
+  const [lockedFor, setLockedFor] = useState(0)
 
   const employeeIdRef = useRef(null)
   const passwordRef = useRef(null)
@@ -156,6 +160,27 @@ export default function Login() {
 
   // Where the user was heading before the gate sent them here.
   const destination = location.state?.from?.pathname ?? '/'
+
+  // Tick the lockout down. One interval, started when the lock appears and
+  // cleared when it clears, so a user who waits it out watches the button
+  // re-enable itself rather than guessing. The effect depends on the boolean,
+  // not the number, or it would tear down and rebuild the interval every
+  // second — and the functional update means it never needs to read the count.
+  const isLocked = lockedFor > 0
+  useEffect(() => {
+    if (!isLocked) return undefined
+    const id = window.setInterval(() => setLockedFor((s) => Math.max(0, s - 1)), 1000)
+    return () => window.clearInterval(id)
+  }, [isLocked])
+
+  /** Warn about Caps Lock — the commonest reason a correct password fails. */
+  const trackCapsLock = (event) => {
+    try {
+      setCapsLock(event.getModifierState?.('CapsLock') ?? false)
+    } catch {
+      /* not every browser reports modifier state on every event */
+    }
+  }
 
   const handleSubmit = async (event) => {
     event.preventDefault()
@@ -184,6 +209,9 @@ export default function Login() {
       // The server's message, verbatim. For a wrong password and an unknown
       // Employee ID it is deliberately identical — see backend/auth/api.py.
       setFailure(error?.message || 'Sign-in failed. Try again.')
+      if (error?.code === 'RATE_LIMITED') {
+        setLockedFor(Number(error.details?.retry_after_seconds) || 60)
+      }
       setPassword('')
       passwordRef.current?.focus()
     } finally {
@@ -191,7 +219,7 @@ export default function Login() {
     }
   }
 
-  const busy = submitting
+  const busy = submitting || isLocked
 
   return (
     <div className="grid min-h-screen lg:grid-cols-[1fr_30rem] xl:grid-cols-[1fr_33rem]">
@@ -358,7 +386,14 @@ export default function Login() {
                   value={password}
                   disabled={busy}
                   aria-invalid={errors.password ? 'true' : undefined}
-                  aria-describedby={errors.password ? 'login-password-error' : undefined}
+                  aria-describedby={
+                    [errors.password && 'login-password-error', capsLock && 'login-capslock']
+                      .filter(Boolean)
+                      .join(' ') || undefined
+                  }
+                  onKeyDown={trackCapsLock}
+                  onKeyUp={trackCapsLock}
+                  onBlur={() => setCapsLock(false)}
                   onChange={(event) => {
                     setPassword(event.target.value)
                     if (errors.password) setErrors((e) => ({ ...e, password: undefined }))
@@ -380,6 +415,17 @@ export default function Login() {
                   {errors.password}
                 </p>
               )}
+              {/* The commonest reason a correct password is rejected. Worth a
+                  line here rather than a failed attempt against the limiter. */}
+              {capsLock && !errors.password && (
+                <p
+                  id="login-capslock"
+                  role="status"
+                  className="mt-1.5 text-xs text-amber-600 dark:text-amber-400"
+                >
+                  Caps Lock is on.
+                </p>
+              )}
             </div>
 
             <label className="flex cursor-pointer select-none items-center gap-2.5 text-sm">
@@ -394,7 +440,11 @@ export default function Login() {
             </label>
 
             <button type="submit" disabled={busy} className="auth-button-primary">
-              {submitting ? 'Signing in…' : 'Sign in'}
+              {submitting
+                ? 'Signing in…'
+                : lockedFor > 0
+                  ? `Try again in ${lockedFor}s`
+                  : 'Sign in'}
             </button>
           </form>
 

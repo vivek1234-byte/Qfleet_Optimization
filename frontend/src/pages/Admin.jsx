@@ -13,6 +13,7 @@
  */
 import {
   KeyRound,
+  LogOut,
   Pencil,
   Search,
   ShieldCheck,
@@ -439,6 +440,20 @@ export default function Admin() {
       `${employee.employee_id} ${employee.is_active ? 'deactivated' : 'reactivated'}.`,
     )
 
+  const handleRevoke = (employee) => {
+    // eslint-disable-next-line no-alert
+    const confirmed = window.confirm(
+      `Sign ${employee.employee_id} (${employee.full_name}) out of every device?\n\n` +
+        'Their password still works — they can sign straight back in. Use this for ' +
+        'a lost phone or a terminal someone forgot to sign out of.',
+    )
+    if (!confirmed) return
+    mutate(
+      () => api.admin.revokeSessions(employee.id),
+      `${employee.employee_id} signed out everywhere.`,
+    )
+  }
+
   const handleDelete = (employee) => {
     // eslint-disable-next-line no-alert
     const confirmed = window.confirm(
@@ -527,6 +542,11 @@ export default function Admin() {
                   setPanel('reset')
                   setFormError(null)
                 }}
+              />
+              <IconAction
+                label={`Sign ${row.employee_id} out of every device`}
+                icon={LogOut}
+                onClick={() => handleRevoke(row)}
               />
               <IconAction
                 label={`${row.is_active ? 'Deactivate' : 'Reactivate'} ${row.employee_id}`}
@@ -716,8 +736,9 @@ export default function Admin() {
 
       <p className="text-faint mt-6 text-xs leading-relaxed">
         Passwords are stored only as bcrypt hashes and are never returned by the API, so there is
-        no way to look one up — only to set a new one. Deactivating an account ends its access
-        immediately, including any session already signed in.
+        no way to look one up — only to set a new one. Resetting a password, signing someone out
+        and deactivating an account all end every session that person currently has, on every
+        device, immediately.
       </p>
     </div>
   )

@@ -8,7 +8,6 @@ Quantum-inspired multi-objective optimisation for maritime fleet decarbonisation
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 ## Problem
-## test
 
 Shipping moves ~80% of world trade and emits roughly 3% of global CO₂. Cutting
 that means solving three objectives at once — **fuel burn**, **greenhouse-gas
@@ -186,7 +185,6 @@ them, add `dependencies=[Depends(get_current_employee)]` to each router in
 `backend/main.py` and give the stream a cookie-based session.
 
 ## API
-## Test
 
 All errors share one envelope:
 
@@ -205,7 +203,8 @@ All errors share one envelope:
 | --- | --- | --- |
 | `POST` | `/api/auth/login` | Employee ID + password → bearer token |
 | `GET` | `/api/auth/me` | The signed-in employee |
-| `POST` | `/api/auth/logout` | End the session (the client discards the token) |
+| `POST` | `/api/auth/logout` | Sign out on this device |
+| `POST` | `/api/auth/logout-everywhere` | End every session for this account |
 | `POST` | `/api/auth/change-password` | Change your own password |
 
 ### Administration — `ADMIN` only
@@ -217,7 +216,8 @@ All errors share one envelope:
 | `PUT` | `/api/admin/employees/{id}` | Edit name, department, role, email, status |
 | `POST` | `/api/admin/employees/{id}/activate` | Reinstate an account |
 | `POST` | `/api/admin/employees/{id}/deactivate` | Revoke without deleting |
-| `POST` | `/api/admin/employees/{id}/reset-password` | Set a new password |
+| `POST` | `/api/admin/employees/{id}/reset-password` | Set a new password (also ends their sessions) |
+| `POST` | `/api/admin/employees/{id}/revoke-sessions` | Sign them out everywhere, password unchanged |
 | `DELETE` | `/api/admin/employees/{id}` | Delete an employee |
 
 No response from any of these contains `password_hash`.
@@ -294,6 +294,11 @@ Every setting is an environment variable, read in `backend/config.py`:
 | `QGF_JWT_EXPIRE_MINUTES` | `720` | Session length |
 | `QGF_BCRYPT_ROUNDS` | `12` | Password hashing cost |
 | `QGF_PASSWORD_MIN_LENGTH` | `8` | Minimum password length |
+| `QGF_LOGIN_MAX_ATTEMPTS_PER_ID` | `8` | Failed sign-ins per Employee ID before a lockout |
+| `QGF_LOGIN_MAX_ATTEMPTS_PER_IP` | `30` | Failed sign-ins per client address |
+| `QGF_LOGIN_WINDOW_SECONDS` | `300` | Sliding window for both counters |
+| `QGF_DISCLOSE_INACTIVE` | `false` | Whether a disabled account is told it is disabled |
+| `QGF_HSTS_ENABLED` | `false` | Send HSTS. Turn on only when serving HTTPS |
 
 Values are read from the environment, and from a `.env` file in the project
 root if one exists (the environment wins). `.env` is git-ignored;
@@ -326,7 +331,7 @@ cd backend
 python -m pytest tests -q
 ```
 
-268 tests covering the fleet model, all four solvers, the prediction pipeline,
+298 tests covering the fleet model, all four solvers, the prediction pipeline,
 the fuel database, the quality indicators, the regulatory layer and every API
 route — including regression tests pinning the specific bugs this version
 fixed, and tests that pin the published MEPC constants so a typo in a CII
@@ -338,7 +343,7 @@ discover which Employee IDs exist, that every admin route refuses a
 non-administrator at the API rather than in the UI, and that deactivating an
 account ends a session already in progress.
 
-`apitest.py` is a separate 94-check conformance run against a live server,
+`apitest.py` is a separate 104-check conformance run against a live server,
 including the authentication and role-enforcement boundary:
 
 ```bash

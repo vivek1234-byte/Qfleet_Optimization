@@ -31,7 +31,7 @@ os.environ["QGF_DATABASE_URL"] = f"sqlite:///{_DB_PATH.as_posix()}"
 os.environ["QGF_JWT_SECRET"] = "test-secret-not-used-anywhere-real"
 os.environ.setdefault("QGF_BCRYPT_ROUNDS", "4")
 
-from backend.auth import security  # noqa: E402
+from backend.auth import ratelimit, security  # noqa: E402
 from backend.auth.service import create_employee  # noqa: E402
 from backend.config import settings  # noqa: E402
 from backend.db.base import Base  # noqa: E402
@@ -84,6 +84,36 @@ def _database():
 
     yield
     db_session.reset_engine()
+
+
+def _reset_limiters() -> None:
+    """
+    Clear every loaded copy of the limiter.
+
+    `main` imports the backend packages bare (`auth.ratelimit`) while the tests
+    import them as `backend.auth.ratelimit`, so the same source file is loaded
+    twice as two distinct modules with two distinct counters. Resetting only
+    the test's copy leaves the one the API actually uses full, which shows up
+    as unrelated tests failing with 429.
+    """
+    import sys
+
+    for name in ("auth.ratelimit", "backend.auth.ratelimit"):
+        module = sys.modules.get(name)
+        if module is not None:
+            module.reset_all()
+
+
+@pytest.fixture(autouse=True)
+def _clean_limiter():
+    """
+    The limiter is process-global and counts failures. Several tests below
+    fail logins on purpose; without this they would lock each other out and
+    the suite would pass or fail depending on ordering.
+    """
+    _reset_limiters()
+    yield
+    _reset_limiters()
 
 
 @pytest.fixture(scope="module")
@@ -248,6 +278,20 @@ class TestLogin:
             "/api/auth/login", json={"employee_id": "EMP099", "password": STAFF_PASSWORD}
         )
         assert response.status_code == 401
+
+    def test_inactive_says_so_when_disclosure_is_enabled(self, client, monkeypatch):
+        """
+        The kinder message is available, just not the default. An operator who
+        would rather tell people to call an administrator than leave them
+        guessing can turn it on.
+        """
+        import auth.api as app_auth_api
+
+        monkeypatch.setattr(app_auth_api.settings, "DISCLOSE_INACTIVE", True)
+        response = client.post(
+            "/api/auth/login", json={"employee_id": "EMP099", "password": STAFF_PASSWORD}
+        )
+        assert response.status_code == 401
         assert "inactive" in response.json()["error"]["message"].lower()
 
     def test_missing_fields_are_a_validation_error(self, client):
@@ -374,6 +418,7 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/employees/1/activate", None),
     ("post", "/api/admin/employees/1/deactivate", None),
     ("post", "/api/admin/employees/1/reset-password", {"new_password": "Passw0rd!23"}),
+    ("post", "/api/admin/employees/1/revoke-sessions", None),
     ("delete", "/api/admin/employees/1", None),
 ]
 
@@ -446,7 +491,7 @@ class TestEmployeeManagement:
                 "department": "Bunkering",
                 "role": "EMPLOYEE",
                 "email": "Anand.Kumar@QFleet.local",
-                "password": "Anand@123456",
+                "password": "harbour-tide-9471",
             },
         )
         assert response.status_code == 201, response.text
@@ -458,7 +503,7 @@ class TestEmployeeManagement:
 
         assert (
             client.post(
-                "/api/auth/login", json={"employee_id": "EMP400", "password": "Anand@123456"}
+                "/api/auth/login", json={"employee_id": "EMP400", "password": "harbour-tide-9471"}
             ).status_code
             == 200
         )
@@ -467,7 +512,7 @@ class TestEmployeeManagement:
         payload = {
             "employee_id": "EMP401",
             "full_name": "First Person",
-            "password": "First@123456",
+            "password": "bunker-lane-5520",
         }
         assert client.post("/api/admin/employees", headers=admin_headers, json=payload).status_code == 201
         again = client.post(
@@ -482,7 +527,7 @@ class TestEmployeeManagement:
         again = client.post(
             "/api/admin/employees",
             headers=admin_headers,
-            json={"employee_id": "emp401", "full_name": "Third Person", "password": "Third@123456"},
+            json={"employee_id": "emp401", "full_name": "Third Person", "password": "quay-lantern-8813"},
         )
         assert again.status_code == 409
 
@@ -548,7 +593,7 @@ class TestEmployeeManagement:
                 "employee_id": "EMP410",
                 "full_name": "Before Rename",
                 "department": "Chartering",
-                "password": "Before@12345",
+                "password": "anchor-drift-3318",
             },
         ).json()
 
@@ -564,7 +609,7 @@ class TestEmployeeManagement:
         # And the password still works: editing a name must not disturb it.
         assert (
             client.post(
-                "/api/auth/login", json={"employee_id": "EMP410", "password": "Before@12345"}
+                "/api/auth/login", json={"employee_id": "EMP410", "password": "anchor-drift-3318"}
             ).status_code
             == 200
         )
@@ -647,7 +692,7 @@ class TestEmployeeManagement:
             json={
                 "employee_id": "EMP440",
                 "full_name": "Short Tenure",
-                "password": "Short@123456",
+                "password": "jetty-cable-7729",
             },
         ).json()
         assert client.delete(f"/api/admin/employees/{created['id']}", headers=admin_headers).status_code == 200
@@ -689,12 +734,12 @@ class TestLockoutGuards:
             json={
                 "employee_id": "EMP450",
                 "full_name": "Second Admin",
-                "password": "Second@12345",
+                "password": "estuary-swell-6640",
                 "role": "ADMIN",
             },
         ).json()
 
-        second_headers = {"Authorization": f"Bearer {_token(client, 'EMP450', 'Second@12345')}"}
+        second_headers = {"Authorization": f"Bearer {_token(client, 'EMP450', 'estuary-swell-6640')}"}
         me = client.get("/api/auth/me", headers=admin_headers).json()
 
         # Demote everyone else so EMP450 is the only active administrator.
@@ -756,3 +801,283 @@ class TestExistingApiIsUntouched:
     )
     def test_open_routes_still_answer_without_a_token(self, client, path):
         assert client.get(path).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Hardening added after the first security review
+# ---------------------------------------------------------------------------
+class TestBruteForceProtection:
+    """
+    The login endpoint was the weakest part of the system: unlimited attempts
+    against a 250 ms hash is only a throttle if nobody opens a second
+    connection.
+    """
+
+    def test_repeated_failures_are_locked_out(self, client):
+        limit = settings.LOGIN_MAX_ATTEMPTS_PER_ID
+        for _ in range(limit):
+            response = client.post(
+                "/api/auth/login", json={"employee_id": "EMP001", "password": "wrong-one"}
+            )
+            assert response.status_code == 401
+
+        blocked = client.post(
+            "/api/auth/login", json={"employee_id": "EMP001", "password": "wrong-one"}
+        )
+        assert blocked.status_code == 429
+        assert blocked.json()["error"]["code"] == "RATE_LIMITED"
+        assert blocked.headers.get("Retry-After")
+
+    def test_the_lockout_survives_a_correct_password(self, client):
+        """
+        Otherwise the limit is pointless: an attacker who guesses right on the
+        attempt after the limit still gets in.
+        """
+        for _ in range(settings.LOGIN_MAX_ATTEMPTS_PER_ID):
+            client.post("/api/auth/login", json={"employee_id": "EMP001", "password": "nope"})
+
+        response = client.post(
+            "/api/auth/login", json={"employee_id": "EMP001", "password": ADMIN_PASSWORD}
+        )
+        assert response.status_code == 429
+
+    def test_a_success_clears_the_counter(self, client):
+        """Two fat-fingered attempts then the right one must not delay anyone."""
+        for _ in range(2):
+            client.post("/api/auth/login", json={"employee_id": "EMP001", "password": "nope"})
+        assert (
+            client.post(
+                "/api/auth/login", json={"employee_id": "EMP001", "password": ADMIN_PASSWORD}
+            ).status_code
+            == 200
+        )
+        # Counter cleared, so the next wrong guess starts from zero again.
+        assert (
+            client.post(
+                "/api/auth/login", json={"employee_id": "EMP001", "password": "nope"}
+            ).status_code
+            == 401
+        )
+
+    def test_one_account_lockout_does_not_block_another(self, client):
+        """Locking EMP001 must not lock the rest of the office out."""
+        for _ in range(settings.LOGIN_MAX_ATTEMPTS_PER_ID + 1):
+            client.post("/api/auth/login", json={"employee_id": "EMP001", "password": "nope"})
+        assert (
+            client.post(
+                "/api/auth/login", json={"employee_id": "EMP002", "password": STAFF_PASSWORD}
+            ).status_code
+            == 200
+        )
+
+    def test_unknown_ids_are_limited_too(self, client):
+        """Otherwise spraying one password across a directory is unlimited."""
+        for i in range(settings.LOGIN_MAX_ATTEMPTS_PER_IP + 2):
+            response = client.post(
+                "/api/auth/login",
+                json={"employee_id": f"GHOST{i:04d}", "password": "Spray@12345"},
+            )
+        assert response.status_code == 429
+
+    def test_the_limiter_runs_before_the_hash(self, client, monkeypatch):
+        """
+        Ordering matters: checking the limit *after* verifying the password
+        would make every blocked request still cost a bcrypt, turning the
+        rate limiter into a CPU amplifier.
+        """
+        calls = []
+        real = security.verify_password
+        monkeypatch.setattr(
+            security, "verify_password", lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+        )
+        import backend.auth.api as auth_api
+
+        monkeypatch.setattr(auth_api, "verify_password", security.verify_password)
+
+        for _ in range(settings.LOGIN_MAX_ATTEMPTS_PER_ID):
+            client.post("/api/auth/login", json={"employee_id": "EMP001", "password": "nope"})
+        before = len(calls)
+        client.post("/api/auth/login", json={"employee_id": "EMP001", "password": "nope"})
+        assert len(calls) == before, "a rate-limited request still hashed a password"
+
+
+class TestSessionRevocation:
+    """`token_version` — what makes a stateless token revocable."""
+
+    def _make(self, client, admin_headers, employee_id, password="Revoke@12345"):
+        created = client.post(
+            "/api/admin/employees",
+            headers=admin_headers,
+            json={"employee_id": employee_id, "full_name": "Revocation Probe", "password": password},
+        )
+        assert created.status_code == 201, created.text
+        return created.json(), {"Authorization": f"Bearer {_token(client, employee_id, password)}"}
+
+    def test_changing_a_password_ends_other_sessions(self, client, admin_headers):
+        """
+        The message says every other session was signed out. Before this
+        existed the message was simply untrue — the old tokens kept working
+        until they expired, which is the opposite of what someone changing a
+        password after a suspected theft needs.
+        """
+        _, first = self._make(client, admin_headers, "EMP500")
+        second = {"Authorization": f"Bearer {_token(client, 'EMP500', 'Revoke@12345')}"}
+        assert client.get("/api/auth/me", headers=second).status_code == 200
+
+        changed = client.post(
+            "/api/auth/change-password",
+            headers=first,
+            json={"current_password": "Revoke@12345", "new_password": "Rotated@98765"},
+        )
+        assert changed.status_code == 200
+
+        # The other device is out.
+        stale = client.get("/api/auth/me", headers=second)
+        assert stale.status_code == 401
+        assert stale.json()["error"]["code"] == "SESSION_REVOKED"
+
+    def test_the_caller_gets_a_working_token_back(self, client, admin_headers):
+        """Being signed out of the device you just used reads as a bug."""
+        _, headers = self._make(client, admin_headers, "EMP501")
+        changed = client.post(
+            "/api/auth/change-password",
+            headers=headers,
+            json={"current_password": "Revoke@12345", "new_password": "Rotated@98765"},
+        )
+        fresh = {"Authorization": f"Bearer {changed.json()['access_token']}"}
+        assert client.get("/api/auth/me", headers=fresh).status_code == 200
+
+    def test_logout_everywhere_ends_this_session_too(self, client, admin_headers):
+        _, headers = self._make(client, admin_headers, "EMP502")
+        assert client.post("/api/auth/logout-everywhere", headers=headers).status_code == 200
+        assert client.get("/api/auth/me", headers=headers).status_code == 401
+
+    def test_plain_logout_does_not_end_other_sessions(self, client, admin_headers):
+        """Signing out of a shared terminal must not kick you off your phone."""
+        _, first = self._make(client, admin_headers, "EMP503")
+        second = {"Authorization": f"Bearer {_token(client, 'EMP503', 'Revoke@12345')}"}
+        assert client.post("/api/auth/logout", headers=first).status_code == 200
+        assert client.get("/api/auth/me", headers=second).status_code == 200
+
+    def test_admin_can_revoke_someone_elses_sessions(self, client, admin_headers):
+        created, headers = self._make(client, admin_headers, "EMP504")
+        assert client.get("/api/auth/me", headers=headers).status_code == 200
+
+        revoked = client.post(
+            f"/api/admin/employees/{created['id']}/revoke-sessions", headers=admin_headers
+        )
+        assert revoked.status_code == 200
+        assert client.get("/api/auth/me", headers=headers).status_code == 401
+
+        # The password still works — that is the difference from deactivation.
+        assert (
+            client.post(
+                "/api/auth/login", json={"employee_id": "EMP504", "password": "Revoke@12345"}
+            ).status_code
+            == 200
+        )
+
+    def test_admin_reset_also_revokes(self, client, admin_headers):
+        created, headers = self._make(client, admin_headers, "EMP505")
+        client.post(
+            f"/api/admin/employees/{created['id']}/reset-password",
+            headers=admin_headers,
+            json={"new_password": "AdminSet@9876"},
+        )
+        assert client.get("/api/auth/me", headers=headers).status_code == 401
+
+    def test_revoke_sessions_is_admin_only(self, client, staff_headers):
+        assert client.post("/api/admin/employees/1/revoke-sessions").status_code == 401
+        assert (
+            client.post(
+                "/api/admin/employees/1/revoke-sessions", headers=staff_headers
+            ).status_code
+            == 403
+        )
+
+
+class TestPasswordQuality:
+    @pytest.mark.parametrize(
+        "password,why",
+        [
+            ("password123", "top of every breach list"),
+            ("12345678", "top of every breach list"),
+            ("changeme", "top of every breach list"),
+            ("aaaabbbb", "too few distinct characters"),
+            ("short1", "too short"),
+        ],
+    )
+    def test_weak_passwords_are_refused(self, client, admin_headers, password, why):
+        response = client.post(
+            "/api/admin/employees",
+            headers=admin_headers,
+            json={"employee_id": "EMP600", "full_name": "Weak Password", "password": password},
+        )
+        assert response.status_code == 422, f"accepted a password that is {why}: {password}"
+
+    def test_password_cannot_be_the_employee_id(self, client, admin_headers):
+        """The most common weak password in a staff system, and no generic list catches it."""
+        response = client.post(
+            "/api/admin/employees",
+            headers=admin_headers,
+            json={"employee_id": "EMP601", "full_name": "Self Named", "password": "emp601xyzq"},
+        )
+        assert response.status_code == 422
+        assert "employee id" in response.text.lower()
+
+    def test_password_cannot_contain_the_name(self, client, admin_headers):
+        response = client.post(
+            "/api/admin/employees",
+            headers=admin_headers,
+            json={
+                "employee_id": "EMP602",
+                "full_name": "Priyanka Sharma",
+                "password": "priyanka2026",
+            },
+        )
+        assert response.status_code == 422
+
+    def test_a_reasonable_password_is_accepted(self, client, admin_headers):
+        response = client.post(
+            "/api/admin/employees",
+            headers=admin_headers,
+            json={
+                "employee_id": "EMP603",
+                "full_name": "Sensible Choice",
+                "password": "harbour-tide-9471",
+            },
+        )
+        assert response.status_code == 201
+
+
+class TestSecurityHeaders:
+    @pytest.mark.parametrize(
+        "header,expected",
+        [
+            ("X-Content-Type-Options", "nosniff"),
+            ("X-Frame-Options", "DENY"),
+            ("Referrer-Policy", "no-referrer"),
+        ],
+    )
+    def test_headers_are_present(self, client, header, expected):
+        assert client.get("/api/health").headers.get(header) == expected
+
+    def test_authenticated_answers_are_not_cached(self, client, admin_headers):
+        response = client.get("/api/admin/employees", headers=admin_headers)
+        assert response.headers.get("Cache-Control") == "no-store"
+
+    def test_hsts_is_off_by_default(self, client):
+        """On plain-http localhost, HSTS pins the origin and is a pain to undo."""
+        assert "Strict-Transport-Security" not in client.get("/api/health").headers
+
+
+class TestInactiveIsPrivateByDefault:
+    def test_a_disabled_account_looks_like_a_wrong_password(self, client):
+        disabled = client.post(
+            "/api/auth/login", json={"employee_id": "EMP099", "password": STAFF_PASSWORD}
+        )
+        wrong = client.post(
+            "/api/auth/login", json={"employee_id": "EMP001", "password": "not-it-either"}
+        )
+        assert disabled.status_code == wrong.status_code == 401
+        assert disabled.json() == wrong.json()

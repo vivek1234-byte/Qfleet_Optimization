@@ -27,11 +27,13 @@ from auth.schemas import (
     MessageResponse,
     PasswordResetRequest,
 )
+from auth.security import password_problem
 from auth.service import (
     create_employee,
     delete_employee,
     list_employees,
     require_by_pk,
+    revoke_sessions,
     set_password,
     update_employee,
 )
@@ -89,6 +91,11 @@ def create(
     db: Session = Depends(get_db),
     actor: Employee = Depends(require_admin),
 ) -> EmployeeOut:
+    # The schema already rejected the universally weak passwords; this catches
+    # the ones that are only weak for *this* person — their own name or ID,
+    # which is the single most common choice in any staff system.
+    _reject_weak(payload.password, payload.employee_id, payload.full_name)
+
     employee = create_employee(
         db,
         employee_id=payload.employee_id,
@@ -172,11 +179,54 @@ def reset_password(
     actor: Employee = Depends(require_admin),
 ) -> MessageResponse:
     employee = require_by_pk(db, pk)
+    _reject_weak(payload.new_password, employee.employee_id, employee.full_name)
+
+    # set_password bumps token_version, so a reset also throws the account off
+    # every device it is currently signed in on. That is the behaviour you want
+    # when the reason for the reset is "we think someone else has it".
     set_password(db, employee, payload.new_password)
-    logger.info("%s reset the password for %s", actor.employee_id, employee.employee_id)
-    return MessageResponse(
-        message=f"Password reset for {employee.employee_id}. Give it to them over a trusted channel."
+    logger.info(
+        "%s reset the password for %s (all sessions revoked)",
+        actor.employee_id,
+        employee.employee_id,
     )
+    return MessageResponse(
+        message=(
+            f"Password reset for {employee.employee_id} and all their sessions ended. "
+            "Give the new password to them over a trusted channel."
+        )
+    )
+
+
+@router.post(
+    "/employees/{pk}/revoke-sessions",
+    response_model=MessageResponse,
+    summary="Sign an employee out of every device",
+)
+def revoke(
+    pk: int = Path(..., ge=1),
+    db: Session = Depends(get_db),
+    actor: Employee = Depends(require_admin),
+) -> MessageResponse:
+    """
+    End every session without changing the password or disabling the account.
+
+    The middle option between "do nothing" and "deactivate": a lost phone, a
+    shared terminal someone forgot to sign out of, a contractor finishing a
+    shift. They can sign straight back in with the password they already have.
+    """
+    employee = require_by_pk(db, pk)
+    revoke_sessions(db, employee)
+    logger.info("%s revoked all sessions for %s", actor.employee_id, employee.employee_id)
+    return MessageResponse(message=f"{employee.employee_id} has been signed out everywhere.")
+
+
+def _reject_weak(password: str, employee_id: str, full_name: str) -> None:
+    problem = password_problem(password, employee_id=employee_id, full_name=full_name)
+    if problem:
+        raise ValidationError(
+            problem, details={"fields": [{"field": "password", "message": problem}]}
+        )
 
 
 @router.delete(

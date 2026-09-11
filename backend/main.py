@@ -154,6 +154,32 @@ async def add_request_context(request: Request, call_next):
     elapsed = time.perf_counter() - started
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Process-Time"] = f"{elapsed:.4f}"
+
+    # Security headers. Cheap, and the absence of them is the first thing any
+    # scanner reports.
+    #   nosniff        — stop a browser guessing a JSON error is HTML
+    #   DENY           — this API is never a frame, so clickjacking has no
+    #                    surface to work with
+    #   no-referrer    — never leak a URL with an id in it to a third party
+    #   CSP            — belt and braces for the JSON API: it serves no HTML
+    #                    and loads nothing, so deny everything
+    #   Permissions    — the API has no use for the camera or the microphone
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault(
+        "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"
+    )
+    # Never let a proxy or a browser cache an authenticated answer.
+    if request.url.path.startswith(("/api/auth", "/api/admin")):
+        response.headers.setdefault("Cache-Control", "no-store")
+    # HSTS only when asked for: sent over plain http://localhost it pins the
+    # whole origin to HTTPS in the browser, which is tedious to undo.
+    if settings.HSTS_ENABLED:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
     if request.url.path.startswith("/api"):
         logger.info(
             "[%s] %s %s -> %d in %.3fs",
@@ -172,7 +198,15 @@ async def add_request_context(request: Request, call_next):
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     logger.info("%s %s -> %s: %s", request.method, request.url.path, exc.code, exc.message)
-    return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+    headers = {}
+    # A handler that sets a header on the injected Response and then raises
+    # loses that header — the response object is discarded and this one is
+    # built fresh. So the rate limiter carries the wait in `details` and it
+    # becomes the standard header here, where it survives.
+    retry_after = exc.details.get("retry_after_seconds") if exc.details else None
+    if retry_after:
+        headers["Retry-After"] = str(int(retry_after))
+    return JSONResponse(status_code=exc.status_code, content=exc.to_dict(), headers=headers)
 
 
 @app.exception_handler(StarletteHTTPException)

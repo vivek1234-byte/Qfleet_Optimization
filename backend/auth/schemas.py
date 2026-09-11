@@ -18,6 +18,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from config import settings
 from db.models import Employee, Role, normalise_employee_id
 
+from .security import password_problem
+
 # Letters, digits, dash, underscore. Deliberately permissive about the shape
 # of the ID itself (operators number people in all sorts of ways) but strict
 # about characters, so nothing exotic reaches a query or a log line.
@@ -37,12 +39,17 @@ def _validate_employee_id(value: str) -> str:
 
 
 def _validate_password(value: str) -> str:
-    if not value:
-        raise ValueError("Password is required.")
-    if len(value) < settings.PASSWORD_MIN_LENGTH:
-        raise ValueError(f"Password must be at least {settings.PASSWORD_MIN_LENGTH} characters.")
-    if len(value.encode("utf-8")) > 72:
-        raise ValueError("Password must be at most 72 bytes.")
+    """
+    Length, plus the checks a length rule misses.
+
+    ``password_problem`` also knows how to reject a password that is the
+    employee's own name or ID, but a field validator cannot see the other
+    fields — so the routes call it again with that context. This catches the
+    universal cases early and cheaply.
+    """
+    problem = password_problem(value)
+    if problem:
+        raise ValueError(problem)
     return value
 
 
@@ -124,6 +131,20 @@ class LoginResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class PasswordChangedResponse(BaseModel):
+    """
+    Changing a password revokes every token, including the one that made the
+    call — so a replacement comes back with the confirmation. Without it the
+    caller would be signed out of the very device they just used, which reads
+    as a bug rather than as security.
+    """
+
+    message: str
+    access_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
 
 
 class ChangePasswordRequest(BaseModel):

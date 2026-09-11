@@ -25,7 +25,7 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 python -m alembic upgrade head
 
 # 4. Create accounts — pick ONE
-python -m backend.manage seed                       # demo staff, for a run-through
+python -m backend.manage seed                       # demo staff (development only)
 python -m backend.manage bootstrap                  # one real admin, prompts for a password
 
 # 5. Start
@@ -68,6 +68,18 @@ package). To repair one by hand:
 ```
 python -m venv venv          REM over the existing folder; packages survive
 ```
+
+### Sign-in protections
+
+| | |
+| --- | --- |
+| Brute force | 8 failed attempts per Employee ID, 30 per client address, over a rolling 5 minutes. A correct password clears the count. The form shows a countdown. |
+| Session revocation | Changing a password, resetting one, deactivating an account or forcing a sign-out ends **every** session that person has, on every device, immediately. |
+| Password quality | Rejects the breach-list favourites and anything containing the person's own Employee ID or name. |
+| Enumeration | An unknown ID, a wrong password and a disabled account are byte-identical in status, body and timing. |
+
+`seed` refuses to run outside development, because the passwords below are
+published in this repository. Use `bootstrap` for anything real.
 
 ### Demo credentials (`manage seed`)
 

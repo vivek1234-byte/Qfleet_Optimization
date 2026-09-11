@@ -73,7 +73,9 @@ echo "      Applying database migrations..."
 "$PY" -m alembic upgrade head || die "migration failed. If it says \"No module named alembic\",
         install the dependencies into this project's venv:
             $PY -m pip install -r backend/requirements.txt"
-"$PY" -m backend.manage seed
+# --force because this launcher IS the development entry point. A real
+# deployment uses `bootstrap`, and plain `seed` refuses outside debug.
+"$PY" -m backend.manage seed --force
 
 # --host is explicit on purpose: both servers bind to localhost only, so
 # nothing on the venue Wi-Fi can reach them. Change to 0.0.0.0 only for a

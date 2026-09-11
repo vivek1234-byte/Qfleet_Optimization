@@ -64,6 +64,16 @@ def get_current_employee(
     if not employee.is_active:
         raise AuthenticationError("Account is inactive. Contact an administrator.")
 
+    # The revocation check. A password change or a forced sign-out increments
+    # the stored counter, which strands every token issued before it — this is
+    # the line that makes "change your password" actually end a stolen
+    # session rather than merely stop new ones being created.
+    if int(claims.get("tv", 0)) != int(employee.token_version):
+        raise AuthenticationError(
+            "Your session was ended. Sign in again.",
+            code="SESSION_REVOKED",
+        )
+
     return employee
 
 

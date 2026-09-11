@@ -137,6 +137,8 @@ export const api = {
     login: (body, config) => post('/api/auth/login', body, { skipAuthRedirect: true, ...config }),
     me: (config) => get('/api/auth/me', config),
     logout: (config) => post('/api/auth/logout', null, config),
+    // Ends every session for this account, including the one making the call.
+    logoutEverywhere: (config) => post('/api/auth/logout-everywhere', null, config),
     changePassword: (body, config) =>
       post('/api/auth/change-password', body, { skipAuthRedirect: true, ...config }),
   },
@@ -154,6 +156,8 @@ export const api = {
     deactivate: (id, config) => post(`/api/admin/employees/${id}/deactivate`, null, config),
     resetPassword: (id, body, config) =>
       post(`/api/admin/employees/${id}/reset-password`, body, config),
+    revokeSessions: (id, config) =>
+      post(`/api/admin/employees/${id}/revoke-sessions`, null, config),
     deleteEmployee: (id, config) => del(`/api/admin/employees/${id}`, config),
   },
 

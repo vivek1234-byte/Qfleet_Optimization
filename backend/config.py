@@ -141,6 +141,23 @@ class Settings:
     BCRYPT_ROUNDS: int = _env_int("QGF_BCRYPT_ROUNDS", 12)
     PASSWORD_MIN_LENGTH: int = _env_int("QGF_PASSWORD_MIN_LENGTH", 8)
 
+    # ---- brute-force protection ------------------------------------------
+    # Counted over a sliding window, per Employee ID and per client address,
+    # and only on failures. See auth/ratelimit.py for why both axes exist.
+    LOGIN_MAX_ATTEMPTS_PER_ID: int = _env_int("QGF_LOGIN_MAX_ATTEMPTS_PER_ID", 8)
+    LOGIN_MAX_ATTEMPTS_PER_IP: int = _env_int("QGF_LOGIN_MAX_ATTEMPTS_PER_IP", 30)
+    LOGIN_WINDOW_SECONDS: int = _env_int("QGF_LOGIN_WINDOW_SECONDS", 300)
+
+    # Whether a disabled account is told it is disabled. Saying so is kinder —
+    # the person knows to call an administrator instead of retrying — but it
+    # confirms the Employee ID exists, so the default is the private one.
+    DISCLOSE_INACTIVE: bool = _env_bool("QGF_DISCLOSE_INACTIVE", False)
+
+    # Send HSTS. Off by default because the development server is plain HTTP
+    # and an HSTS header on localhost pins the whole origin to HTTPS in the
+    # browser, which is a genuinely annoying thing to undo.
+    HSTS_ENABLED: bool = _env_bool("QGF_HSTS_ENABLED", False)
+
     @property
     def allowed_dataset_dir(self) -> Path:
         return self.DATASET_DIR

@@ -166,6 +166,18 @@ def has(*keys):
     return lambda d: all(k in d for k in keys)
 
 
+def _response_headers(path: str) -> dict:
+    """Lower-cased response headers for `path`, or {} if it cannot be reached."""
+    req = urllib.request.Request(BASE + path, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            return {k.lower(): v for k, v in response.headers.items()}
+    except urllib.error.HTTPError as exc:
+        return {k.lower(): v for k, v in exc.headers.items()}
+    except Exception:
+        return {}
+
+
 def main() -> int:
     global BASE, ADMIN_ID, ADMIN_PASSWORD
     ap = argparse.ArgumentParser()
@@ -194,6 +206,18 @@ def main() -> int:
     check("openapi schema", "GET", "/openapi.json", assertions=[
         ("24+ paths", lambda d: len(d["paths"]) >= 20),
     ])
+
+    headers = call("GET", "/api/health")[1] and _response_headers("/api/health")
+    for name, expected in (
+        ("X-Content-Type-Options", "nosniff"),
+        ("X-Frame-Options", "DENY"),
+        ("Referrer-Policy", "no-referrer"),
+    ):
+        check_inline(
+            f"header {name}",
+            (headers.get(name.lower()) or "") == expected,
+            f"{name} is {headers.get(name.lower())!r}, expected {expected!r}",
+        )
 
     model_ready = bool(health and health.get("checks", {}).get("prediction_model", {}).get("ok"))
 
@@ -250,27 +274,49 @@ def main() -> int:
               ])
         check("duplicate id refused", "POST", "/api/admin/employees", expect=409, headers=auth,
               body={"employee_id": ADMIN_ID, "full_name": "Impostor Person",
-                    "password": "Impostor@123"})
+                    "password": "harbour-tide-9471"})
         check("admin rejects a junk token", "GET", "/api/admin/employees", expect=401,
               headers={"Authorization": "Bearer not-a-real-token"})
         check("logout", "POST", "/api/auth/logout", headers=auth)
+
+        # Session revocation: the admin can end someone's sessions without
+        # touching their password or disabling the account.
+        probe2 = call("POST", "/api/admin/employees", {
+            "employee_id": "ZZTEST09", "full_name": "Revocation Probe",
+            "password": "anchor-drift-3318", "department": "QA",
+        }, headers=auth)[1]
+        if isinstance(probe2, dict) and probe2.get("id"):
+            tok2 = call("POST", "/api/auth/login",
+                        {"employee_id": "ZZTEST09", "password": "anchor-drift-3318"})[1]
+            h2 = {"Authorization": f"Bearer {tok2['access_token']}"}
+            check("session works before revocation", "GET", "/api/auth/me", headers=h2)
+            check("admin revokes sessions", "POST",
+                  f"/api/admin/employees/{probe2['id']}/revoke-sessions", headers=auth)
+            check("revoked token is refused", "GET", "/api/auth/me", expect=401, headers=h2)
+            check("but the password still works", "POST", "/api/auth/login",
+                  body={"employee_id": "ZZTEST09", "password": "anchor-drift-3318"})
+            call("DELETE", f"/api/admin/employees/{probe2['id']}", headers=auth)
+
+        check("weak password refused", "POST", "/api/admin/employees", expect=422, headers=auth,
+              body={"employee_id": "ZZTEST10", "full_name": "Weak Choice",
+                    "password": "password123"})
 
         # An ordinary employee must be refused by the API, not just by a
         # hidden menu item. Created, used, and removed again.
         created = call("POST", "/api/admin/employees", {
             "employee_id": "ZZTEST01", "full_name": "Conformance Probe",
-            "password": "Probe@1234567", "department": "QA",
+            "password": "quay-lantern-8813", "department": "QA",
         }, headers=auth)[1]
         if isinstance(created, dict) and created.get("id"):
             probe = call("POST", "/api/auth/login",
-                         {"employee_id": "ZZTEST01", "password": "Probe@1234567"})[1]
+                         {"employee_id": "ZZTEST01", "password": "quay-lantern-8813"})[1]
             probe_auth = {"Authorization": f"Bearer {probe['access_token']}"}
             check("employee cannot list employees", "GET", "/api/admin/employees",
                   expect=403, headers=probe_auth)
             check("employee cannot create employees", "POST", "/api/admin/employees",
                   expect=403, headers=probe_auth,
                   body={"employee_id": "ZZTEST02", "full_name": "Escalated User",
-                        "password": "Escalate@123", "role": "ADMIN"})
+                        "password": "estuary-swell-6640", "role": "ADMIN"})
             check("employee cannot delete employees", "DELETE",
                   f"/api/admin/employees/{created['id']}", expect=403, headers=probe_auth)
 
@@ -280,7 +326,7 @@ def main() -> int:
                          isinstance(deactivated, dict) and deactivated.get("is_active") is False,
                          f"deactivate returned {deactivated!r}")
             check("inactive account cannot sign in", "POST", "/api/auth/login", expect=401,
-                  body={"employee_id": "ZZTEST01", "password": "Probe@1234567"})
+                  body={"employee_id": "ZZTEST01", "password": "quay-lantern-8813"})
             check("deactivation ends a live session", "GET", "/api/auth/me",
                   expect=401, headers=probe_auth)
             call("DELETE", f"/api/admin/employees/{created['id']}", headers=auth)
@@ -291,6 +337,24 @@ def main() -> int:
         SKIP.append(("admin session", f"{ADMIN_ID} / seeded password did not sign in"))
         print(f"  skip  --    admin-only checks — {ADMIN_ID} did not sign in "
               f"(pass --admin-id / --admin-password)")
+
+    # Brute-force protection, last in this section: it deliberately burns
+    # attempts, and the per-address counter is shared with everything above.
+    ghost = "ZZGHOST01"
+    statuses = [
+        call("POST", "/api/auth/login", {"employee_id": ghost, "password": f"wrong-{i}"})[0]
+        for i in range(10)
+    ]
+    check_inline(
+        "repeated failures are rate limited",
+        429 in statuses,
+        f"ten wrong passwords produced {statuses} — none was throttled",
+    )
+    check_inline(
+        "the limit does not trip immediately",
+        statuses[0] == 401,
+        f"the first attempt returned {statuses[0]}, so the limiter is too aggressive",
+    )
 
     # -- Optimization -------------------------------------------------------
     print("\n[Optimization]")
