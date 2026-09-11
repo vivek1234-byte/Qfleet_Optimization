@@ -12,12 +12,18 @@
  */
 import {
   Anchor,
+  ChevronDown,
+  ChevronLast,
+  Clock,
   Columns2,
   Crosshair,
   Droplets,
   Gauge,
+  Hand,
+  Hourglass,
   Layers,
   Leaf,
+  ListOrdered,
   Maximize2,
   Pause,
   Play,
@@ -29,7 +35,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import VoyageMap from '../components/VoyageMap'
 import { useMapViewport } from '../components/WorldMap'
@@ -37,12 +43,19 @@ import { Alert, Badge, Button, Checkbox, ErrorState, Select, cx } from '../compo
 import { MAP_VIEWS } from '../data/geography'
 import { useAsync, useFetch } from '../hooks/useApi'
 import { useNetwork } from '../hooks/useNetwork'
+import { useSimulation } from '../hooks/useSimulation'
 import api from '../lib/api'
 import { MONTHS, OPTIMIZER_PRESETS, beaufortLabel, ciiColor, fuelColor } from '../lib/domain'
 import { compact, num, pct, usd } from '../lib/format'
 import { setActivePlan, useActivePlan } from '../lib/planStore'
 import {
-  TIME_SCALES,
+  DEFAULT_DWELL_HOURS,
+  SIM_SPEEDS,
+  STATE,
+  STATE_META,
+  STEP_PRESETS,
+} from '../lib/simEngine'
+import {
   formatDuration,
   formatSimClock,
   shipsFromPlan,
@@ -51,109 +64,252 @@ import {
 
 const EMPTY = []
 
+/** Steps offered in both directions. Backwards is exact — the engine replays. */
+const SCRUB_BACK = [
+  { label: '−1 d', hours: -24 },
+  { label: '−6 h', hours: -6 },
+  { label: '−1 h', hours: -1 },
+]
+
+/** Real seconds elapsed, as mm:ss / h:mm:ss. */
+function formatRealTime(seconds) {
+  const s = Math.max(0, Math.floor(seconds))
+  const hh = Math.floor(s / 3600)
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0')
+  const ss = String(s % 60).padStart(2, '0')
+  return hh > 0 ? `${hh}:${mm}:${ss}` : `${mm}:${ss}`
+}
+
 /* -------------------------------------------------------------------------- */
 /* Small pieces                                                                */
 /* -------------------------------------------------------------------------- */
-function Ticker({ label, value, unit, icon: Icon, tone = 'text-primary-400', delta }) {
+const STATE_TONE = {
+  neutral: 'bg-slate-500/15 text-slate-500 dark:text-slate-300',
+  primary: 'bg-primary-500/15 text-primary-600 dark:text-primary-300',
+  eco: 'bg-eco-500/15 text-eco-700 dark:text-eco-300',
+  warning: 'bg-amber-500/20 text-amber-700 dark:text-amber-300',
+}
+
+function StateBadge({ state }) {
+  const meta = STATE_META[state] ?? STATE_META.IN_TRANSIT
   return (
-    <div className="flex items-center gap-2.5">
-      <Icon size={16} className={cx('shrink-0', tone)} aria-hidden />
-      <div className="min-w-0">
-        <p className="text-faint text-[0.68rem] font-medium uppercase tracking-wide">{label}</p>
-        <p className="ticker-value truncate text-sm font-semibold">
-          {value}
-          {unit && <span className="text-faint ml-1 text-xs font-normal">{unit}</span>}
-          {delta && <span className="ml-1.5 text-xs font-medium text-eco-500">{delta}</span>}
-        </p>
-      </div>
-    </div>
+    <span
+      className={cx(
+        'shrink-0 rounded px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide',
+        STATE_TONE[meta.tone] ?? STATE_TONE.neutral,
+      )}
+    >
+      {meta.label}
+    </span>
   )
 }
 
-function VesselRow({ snapshot, selected, onSelect }) {
+/**
+ * One vessel in the fleet panel.
+ *
+ * Expanded, it is also the vessel's control panel: hold it where it is, or
+ * order a different speed. Both are recorded as decisions on the simulation's
+ * timeline rather than applied to the marker, which is why a held vessel
+ * resumes from exactly where it stopped.
+ */
+function VesselRow({ snapshot, selected, onSelect, onToggleHold, onSpeed }) {
   const color = fuelColor(snapshot.fuelType)
   const rating = snapshot.cii
+  const held = snapshot.state === STATE.HELD
+  const alongside = snapshot.dwellRemaining > 0
+  const plan = snapshot.planSpeedKnots || 1
+  const minKn = Math.max(4, Math.round(plan * 0.5))
+  const maxKn = Math.round(plan * 1.25)
+
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(selected ? null : snapshot.id)}
+    <div
       className={cx(
-        'w-full rounded-lg border p-2.5 text-left transition-colors',
+        'rounded-lg border transition-colors',
         selected
           ? 'border-primary-500 bg-primary-50 dark:bg-primary-950/40'
           : 'hover:bg-[rgb(var(--surface-sunken))]',
       )}
       style={selected ? undefined : { borderColor: 'rgb(var(--border-subtle))' }}
     >
-      <div className="flex items-center gap-2">
-        <span
-          className="h-2.5 w-2.5 shrink-0 rounded-full"
-          style={{ backgroundColor: color }}
-          aria-hidden
-        />
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.vesselName}</span>
-        {rating && (
+      <button
+        type="button"
+        onClick={() => onSelect(selected ? null : snapshot.id)}
+        className="w-full p-2.5 text-left"
+      >
+        <div className="flex items-center gap-2">
           <span
-            className="grid h-4 w-4 shrink-0 place-items-center rounded text-[0.6rem] font-bold text-white"
-            style={{ backgroundColor: ciiColor(rating) }}
-            title={`IMO carbon intensity rating ${rating}`}
-          >
-            {rating}
-          </span>
-        )}
-        <span className="numeric text-faint shrink-0 text-xs">
-          {snapshot.berthed ? 'in port' : `${snapshot.speedKnots.toFixed(1)} kn`}
-        </span>
-      </div>
-      <p className="text-faint mt-0.5 truncate text-xs">
-        {snapshot.berthed ? (
-          <>Alongside {snapshot.port}</>
-        ) : (
-          <>
-            {snapshot.laneName} {snapshot.inbound ? '(return)' : ''} · ETA{' '}
-            {formatDuration(snapshot.etaHours)}
-          </>
-        )}
-      </p>
-      <div className="mt-1.5 flex items-center gap-2">
-        <div className="h-1 flex-1 overflow-hidden rounded-full bg-[rgb(var(--surface-sunken))]">
-          <div
-            className="h-full rounded-full transition-[width] duration-200"
-            style={{ width: `${Math.min(snapshot.progressPct, 100)}%`, backgroundColor: color }}
+            className="h-2.5 w-2.5 shrink-0 rounded-full"
+            style={{ backgroundColor: color }}
+            aria-hidden
           />
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{snapshot.vesselName}</span>
+          {rating && (
+            <span
+              className="grid h-4 w-4 shrink-0 place-items-center rounded text-[0.6rem] font-bold text-white"
+              style={{ backgroundColor: ciiColor(rating) }}
+              title={`IMO carbon intensity rating ${rating}`}
+            >
+              {rating}
+            </span>
+          )}
+          <StateBadge state={snapshot.state} />
         </div>
-        <span className="numeric text-faint w-20 shrink-0 text-right text-[0.68rem]">
-          {num(snapshot.fuelTons, 0)} t · {num(snapshot.co2Tons, 0)} t
-        </span>
-      </div>
-      {selected && (
-        <dl
-          className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1 border-t pt-2 text-xs"
-          style={{ borderColor: 'rgb(var(--border-subtle))' }}
-        >
-          <dt className="text-faint">Class</dt>
-          <dd className="text-right">{snapshot.vesselType}</dd>
-          <dt className="text-faint">Fuel</dt>
-          <dd className="text-right">{snapshot.fuelType}</dd>
-          <dt className="text-faint">Shore power</dt>
-          <dd className="numeric text-right">{pct(snapshot.shorePowerPct, 0)}</dd>
-          <dt className="text-faint">Sailed</dt>
-          <dd className="numeric text-right">{num(snapshot.sailedNm)} nm</dd>
-          <dt className="text-faint">Remaining</dt>
-          <dd className="numeric text-right">{num(snapshot.remainingNm)} nm</dd>
-          <dt className="text-faint">Leg cost</dt>
-          <dd className="numeric text-right">{usd(snapshot.costUsd, { compact: true })}</dd>
-          {snapshot.ecaFraction > 0 && (
+
+        <p className="text-faint mt-0.5 truncate text-xs">
+          {held ? (
+            <>Holding on {snapshot.laneName}</>
+          ) : alongside ? (
             <>
-              <dt className="text-faint">In an ECA</dt>
-              <dd className="numeric text-right text-amber-600 dark:text-amber-400">
-                {pct(snapshot.ecaFraction * 100, 0)} of the lane
-              </dd>
+              {snapshot.dwellPort} · departs in {formatDuration(snapshot.dwellRemaining)}
+            </>
+          ) : (
+            <>
+              {snapshot.laneName}
+              {snapshot.inbound ? ' (return)' : ''} · {snapshot.speedKnots.toFixed(1)} kn · ETA{' '}
+              {snapshot.etaHours == null ? '—' : formatDuration(snapshot.etaHours)}
             </>
           )}
-        </dl>
+        </p>
+
+        <div className="mt-1.5 flex items-center gap-2">
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-[rgb(var(--surface-sunken))]">
+            <div
+              className={cx('h-full rounded-full', !held && 'transition-[width] duration-200')}
+              style={{
+                width: `${Math.min(
+                  (alongside ? snapshot.dwellProgress : snapshot.progress) * 100,
+                  100,
+                )}%`,
+                backgroundColor: alongside ? '#64748b' : color,
+              }}
+            />
+          </div>
+          <span className="numeric text-faint w-20 shrink-0 text-right text-[0.68rem]">
+            {num(snapshot.fuelTons, 0)} t · {num(snapshot.co2Tons, 0)} t
+          </span>
+        </div>
+      </button>
+
+      {selected && (
+        <div
+          className="space-y-2.5 border-t px-2.5 pb-2.5 pt-2"
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+        >
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={held ? 'primary' : 'secondary'}
+              icon={held ? Play : Hand}
+              onClick={() => onToggleHold(snapshot.id)}
+              className="flex-1"
+            >
+              {held ? 'Resume' : 'Hold'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => onSpeed(snapshot.id, snapshot.planSpeedKnots)}
+              disabled={snapshot.commandedKnots === snapshot.planSpeedKnots}
+              title="Return to the speed the optimiser chose"
+            >
+              Plan speed
+            </Button>
+          </div>
+
+          <label className="block">
+            <span className="text-faint flex items-baseline justify-between text-[0.68rem]">
+              <span>Ordered speed</span>
+              <span className="numeric">
+                {snapshot.commandedKnots.toFixed(1)} kn
+                {snapshot.commandedKnots !== snapshot.planSpeedKnots && (
+                  <span className="text-faint"> (plan {snapshot.planSpeedKnots.toFixed(1)})</span>
+                )}
+              </span>
+            </span>
+            <input
+              type="range"
+              min={minKn}
+              max={maxKn}
+              step={0.5}
+              value={snapshot.commandedKnots}
+              onChange={(e) => onSpeed(snapshot.id, Number(e.target.value))}
+              className="mt-1 w-full accent-[rgb(var(--primary-500))]"
+              aria-label={`Ordered speed for ${snapshot.vesselName}`}
+            />
+          </label>
+
+          <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            <dt className="text-faint">Class</dt>
+            <dd className="text-right">{snapshot.vesselType}</dd>
+            <dt className="text-faint">Fuel</dt>
+            <dd className="text-right">{snapshot.fuelType}</dd>
+            <dt className="text-faint">Heading for</dt>
+            <dd className="truncate text-right">{snapshot.heading}</dd>
+            <dt className="text-faint">Shore power</dt>
+            <dd className="numeric text-right">{pct(snapshot.shorePowerPct, 0)}</dd>
+            <dt className="text-faint">Sailed</dt>
+            <dd className="numeric text-right">{num(snapshot.sailedNm)} nm</dd>
+            <dt className="text-faint">Remaining</dt>
+            <dd className="numeric text-right">{num(snapshot.remainingNm)} nm</dd>
+            <dt className="text-faint">Legs done</dt>
+            <dd className="numeric text-right">{snapshot.legsCompleted}</dd>
+            <dt className="text-faint">Leg cost</dt>
+            <dd className="numeric text-right">{usd(snapshot.costUsd, { compact: true })}</dd>
+            {snapshot.ecaFraction > 0 && (
+              <>
+                <dt className="text-faint">In an ECA</dt>
+                <dd className="numeric text-right text-amber-600 dark:text-amber-400">
+                  {pct(snapshot.ecaFraction * 100, 0)} of the lane
+                </dd>
+              </>
+            )}
+          </dl>
+        </div>
       )}
-    </button>
+    </div>
+  )
+}
+
+/** Most recent events, newest first. */
+function TimelineFeed({ events, onSelect }) {
+  const recent = useMemo(() => events.slice(-40).reverse(), [events])
+  if (recent.length === 0) {
+    return (
+      <p className="text-faint px-1 py-3 text-xs">
+        Nothing has happened yet. Arrivals, departures and any vessel you hold will be logged here
+        against the simulated clock.
+      </p>
+    )
+  }
+  const TONE = {
+    arrived: 'bg-eco-500',
+    departed: 'bg-primary-500',
+    held: 'bg-amber-500',
+    resumed: 'bg-sky-500',
+  }
+  return (
+    <ol className="space-y-1.5">
+      {recent.map((event, i) => (
+        <li key={`${event.at}-${event.shipId}-${i}`}>
+          <button
+            type="button"
+            onClick={() => onSelect?.(event.shipId)}
+            className="flex w-full items-start gap-2 rounded px-1 py-0.5 text-left hover:bg-[rgb(var(--surface-sunken))]"
+          >
+            <span
+              className={cx('mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full', TONE[event.kind] ?? 'bg-slate-500')}
+              aria-hidden
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs">
+                <span className="font-medium">{event.vessel}</span> · {event.text}
+              </span>
+              <span className="numeric text-faint text-[0.65rem]">{formatSimClock(event.at)}</span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ol>
   )
 }
 
@@ -181,6 +337,114 @@ function LayerToggles({ layers, setLayers }) {
   )
 }
 
+/**
+ * A sidebar card whose body collapses to its header.
+ *
+ * The right column is the operator's control surface, and it does not all
+ * matter at once. Collapsing a section hands its height to the ones still
+ * open, so the same column serves someone watching the fleet and someone
+ * fiddling with layers without either fighting for room.
+ */
+function CollapsibleCard({ title, icon: Icon, open, onToggle, summary, right, bodyClass, children }) {
+  return (
+    <section className="card flex shrink-0 flex-col overflow-hidden p-0">
+      <header className="flex items-center gap-2 px-4 py-2.5">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <ChevronDown
+            size={15}
+            className={cx('text-faint shrink-0 transition-transform', open ? '' : '-rotate-90')}
+            aria-hidden
+          />
+          {Icon && <Icon size={15} className="shrink-0" aria-hidden />}
+          <h2 className="shrink-0 text-sm font-semibold">{title}</h2>
+          {!open && summary && (
+            <span className="text-faint ml-auto truncate text-xs">{summary}</span>
+          )}
+        </button>
+        {right}
+      </header>
+      {open && (
+        <div
+          className={cx('border-t', bodyClass)}
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+        >
+          {children}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/** A single reading in the bottom metrics bar. */
+function Metric({ label, value, unit, icon: Icon, tone = 'text-primary-400', delta }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      {Icon && <Icon size={16} className={cx('shrink-0', tone)} aria-hidden />}
+      <div className="min-w-0">
+        <p className="text-faint text-[0.62rem] font-medium uppercase tracking-wide">{label}</p>
+        <p className="ticker-value truncate text-sm font-semibold">
+          {value}
+          {unit && <span className="text-faint ml-1 text-xs font-normal">{unit}</span>}
+          {delta && <span className="ml-1.5 text-xs font-medium text-eco-500">{delta}</span>}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/** Floating status card, top-left of the map. */
+function MapStatusOverlay({ running, clock, rateLabel, vessels, realTime }) {
+  const rows = [
+    ['Simulated', clock],
+    ['Rate', rateLabel],
+    ['Vessels', vessels],
+    ['Real elapsed', realTime],
+  ]
+  return (
+    <div className="pointer-events-none rounded-lg border border-white/10 bg-black/70 px-3 py-2 backdrop-blur-sm">
+      <div className="flex items-center gap-1.5">
+        <span
+          className={cx(
+            'h-1.5 w-1.5 rounded-full',
+            running ? 'animate-pulse bg-eco-400' : 'bg-amber-400',
+          )}
+          aria-hidden
+        />
+        <span className="text-[0.6rem] font-semibold uppercase tracking-[0.14em] text-slate-200">
+          Live simulation · {running ? 'Running' : 'Paused'}
+        </span>
+      </div>
+      <dl className="mt-1.5 space-y-0.5 text-[0.7rem]">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex items-baseline justify-between gap-6">
+            <dt className="text-slate-400">{label}</dt>
+            <dd className="numeric text-slate-100">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  )
+}
+
+/** Which of the three fleet buckets a vessel is in. */
+function fleetClass(s) {
+  if (s.state === STATE.HELD) return 'held'
+  if (s.dwellRemaining > 0) return 'port'
+  return 'sea'
+}
+
+const FLEET_STATUS = [
+  { id: 'all', label: 'All' },
+  { id: 'sea', label: 'At sea' },
+  { id: 'port', label: 'In port' },
+  { id: 'held', label: 'Held' },
+]
+
 /* -------------------------------------------------------------------------- */
 /* Page                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -191,15 +455,29 @@ export default function Simulator() {
   const optimise = useAsync((signal, body) => api.optimization.optimize(body, { signal }))
 
   const [running, setRunning] = useState(true)
-  const [scaleId, setScaleId] = useState('faster')
+  // One simulated hour per real second. The old default was six, which is why
+  // the clock looked like it was sprinting and why an eighteen-hour port call
+  // went past in three seconds.
+  const [scaleId, setScaleId] = useState('x1')
   const [split, setSplit] = useState(false)
   const [selectedId, setSelectedId] = useState(null)
   const [fuelFilter, setFuelFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
   const [month, setMonth] = useState('')
-  const [snapshots, setSnapshots] = useState(EMPTY)
-  const [baselineSnapshots, setBaselineSnapshots] = useState(EMPTY)
-  const [clockHours, setClockHours] = useState(0)
+  const [jumpDay, setJumpDay] = useState('')
+  // The right column is a control surface; not all of it matters at once.
+  const [openSections, setOpenSections] = useState({
+    fleet: true,
+    timeline: true,
+    carbon: false,
+    controls: false,
+    layers: false,
+  })
+  const toggleSection = useCallback(
+    (key) => setOpenSections((s) => ({ ...s, [key]: !s[key] })),
+    [],
+  )
   const [layers, setLayers] = useState({
     trails: true,
     names: false,
@@ -210,9 +488,6 @@ export default function Simulator() {
     weather: false,
   })
 
-  // One clock for both panes. Sharing the ref is what keeps a split view
-  // honest: the two fleets are always at the same moment.
-  const clockRef = useRef({ hours: 0 })
   const viewport = useMapViewport(MAP_VIEWS.indianOcean.box)
   const { setBox, zoomBy } = viewport
 
@@ -265,41 +540,56 @@ export default function Simulator() {
     return set
   }, [visibleShips, network.lanesByName])
 
-  /* ---- clock ------------------------------------------------------------ */
-  const timeScale = TIME_SCALES.find((s) => s.id === scaleId) ?? TIME_SCALES[2]
+  /* ---- the clock -------------------------------------------------------- */
+  const timeScale = useMemo(
+    () => SIM_SPEEDS.find((s) => s.id === scaleId) ?? SIM_SPEEDS[3],
+    [scaleId],
+  )
 
-  const onTick = useCallback((hours, next) => {
-    setClockHours(hours)
-    setSnapshots(next)
-  }, [])
-  const onBaselineTick = useCallback((_hours, next) => setBaselineSnapshots(next), [])
-
-  const resetClock = useCallback(() => {
-    clockRef.current.hours = 0
-    setClockHours(0)
-  }, [])
+  // In split mode both fleets are handed to one `useSimulation` call, so
+  // "one clock for both panes" is structural rather than a convention the page
+  // has to keep. The baseline fleet is drawn and measured but left out of the
+  // status bar and the timeline, which describe the fleet being flown.
+  const compareShips = split ? baselineShips : EMPTY
+  const sim = useSimulation(ships, {
+    hoursPerSecond: timeScale.hoursPerSecond,
+    running,
+    extraShips: compareShips,
+  })
+  const { engineRef, snapshotById, hours: clockHours } = sim
 
   useEffect(() => {
     const onKey = (event) => {
-      if (event.code !== 'Space') return
       const tag = event.target?.tagName
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'BUTTON') return
-      event.preventDefault()
-      setRunning((r) => !r)
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+      if (event.code === 'Space') {
+        if (tag === 'BUTTON') return
+        event.preventDefault()
+        setRunning((r) => !r)
+      } else if (event.code === 'ArrowRight' && event.shiftKey) {
+        event.preventDefault()
+        sim.stepBy(1)
+      } else if (event.code === 'ArrowLeft' && event.shiftKey) {
+        event.preventDefault()
+        sim.stepBy(-1)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [sim])
 
   /* ---- totals ----------------------------------------------------------- */
   const visibleIds = useMemo(() => new Set(visibleShips.map((s) => s.id)), [visibleShips])
+  const baselineIds = useMemo(() => new Set(baselineShips.map((s) => s.id)), [baselineShips])
 
   const summarise = useCallback((rows) => {
-    const atSea = rows.filter((s) => !s.berthed)
+    const atSea = rows.filter((s) => s.state === STATE.IN_TRANSIT)
+    const held = rows.filter((s) => s.state === STATE.HELD)
     return {
       vessels: rows.length,
       atSea: atSea.length,
-      inPort: rows.length - atSea.length,
+      held: held.length,
+      inPort: rows.length - atSea.length - held.length,
       fuel: rows.reduce((a, s) => a + s.fuelTons, 0),
       co2: rows.reduce((a, s) => a + s.co2Tons, 0),
       cost: rows.reduce((a, s) => a + s.costUsd, 0),
@@ -308,12 +598,12 @@ export default function Simulator() {
   }, [])
 
   const totals = useMemo(
-    () => summarise(snapshots.filter((s) => visibleIds.has(s.id))),
-    [snapshots, visibleIds, summarise],
+    () => summarise(sim.snapshots.filter((s) => visibleIds.has(s.id))),
+    [sim.snapshots, visibleIds, summarise],
   )
   const baselineTotals = useMemo(
-    () => summarise(baselineSnapshots),
-    [baselineSnapshots, summarise],
+    () => summarise(sim.snapshots.filter((s) => baselineIds.has(s.id))),
+    [sim.snapshots, baselineIds, summarise],
   )
 
   // In split mode the two fleets may be different sizes, so compare per-vessel
@@ -336,10 +626,35 @@ export default function Simulator() {
     }
   }, [split, totals, baselineTotals])
 
-  const snapshotById = useMemo(
-    () => Object.fromEntries(snapshots.map((s) => [s.id, s])),
-    [snapshots],
+  /* ---- fleet panel data ------------------------------------------------- */
+  // Snapshots for the vessels passing the fuel/class filter, in the ships'
+  // order so the list is stable frame to frame.
+  const fleetSnapshots = useMemo(
+    () => visibleShips.map((s) => snapshotById.get(s.id)).filter(Boolean),
+    [visibleShips, snapshotById],
   )
+  const fleetCounts = useMemo(() => {
+    const c = { all: fleetSnapshots.length, sea: 0, port: 0, held: 0 }
+    fleetSnapshots.forEach((s) => {
+      c[fleetClass(s)] += 1
+    })
+    return c
+  }, [fleetSnapshots])
+  const shownFleet = useMemo(
+    () =>
+      statusFilter === 'all'
+        ? fleetSnapshots
+        : fleetSnapshots.filter((s) => fleetClass(s) === statusFilter),
+    [fleetSnapshots, statusFilter],
+  )
+  // Mean ETA across vessels actually under way — a real derived figure, not a
+  // placeholder. Null when nothing is sailing.
+  const meanEta = useMemo(() => {
+    const etas = fleetSnapshots
+      .filter((s) => s.state === STATE.IN_TRANSIT && s.etaHours != null)
+      .map((s) => s.etaHours)
+    return etas.length ? etas.reduce((a, b) => a + b, 0) / etas.length : null
+  }, [fleetSnapshots])
 
   /* ---- actions ---------------------------------------------------------- */
   const runOptimiser = useCallback(async () => {
@@ -352,13 +667,13 @@ export default function Simulator() {
     })
     if (result) {
       setActivePlan(result, 'simulator')
-      resetClock()
+      sim.reset()
       setSplit(true)
     }
-  }, [optimise, resetClock, month])
+  }, [optimise, sim, month])
 
   const centreOnSelected = useCallback(() => {
-    const snapshot = snapshotById[selectedId]
+    const snapshot = snapshotById.get(selectedId)
     const lane = snapshot && network.lanesByName[snapshot.laneName]
     const geometry = lane && network.geometries[lane.name]
     if (!geometry) return
@@ -388,12 +703,8 @@ export default function Simulator() {
   const error = network.error || fuels.error
 
   /* ---- render ----------------------------------------------------------- */
-  const mapHeight = split
-    ? 'h-[42vh] min-h-[300px] xl:h-[calc(100vh-21rem)]'
-    : 'h-[58vh] min-h-[380px] xl:h-[calc(100vh-21rem)]'
-
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       {error && <ErrorState error={error} onRetry={network.refetch} />}
       {optimise.error && <ErrorState error={optimise.error} />}
 
@@ -405,39 +716,84 @@ export default function Simulator() {
             size="sm"
             icon={running ? Pause : Play}
             onClick={() => setRunning((r) => !r)}
+            title="Space"
           >
             {running ? 'Pause' : 'Play'}
           </Button>
-          <Button variant="ghost" size="sm" icon={RotateCcw} onClick={resetClock}>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={RotateCcw}
+            onClick={sim.reset}
+            title="Back to hour zero and drop every hold and speed order"
+          >
             Reset
           </Button>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-faint text-xs">Clock</span>
-          <span className="ticker-value rounded-md bg-[rgb(var(--surface-sunken))] px-2.5 py-1 text-sm font-semibold">
-            {formatSimClock(clockHours)}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-1.5" role="group" aria-label="Simulation speed">
-          {TIME_SCALES.map((scale) => (
+        {/* Stepping. Backwards is exact — the engine replays from zero rather
+            than trying to run its own arithmetic in reverse. */}
+        <div className="flex items-center gap-1" role="group" aria-label="Step the clock">
+          {SCRUB_BACK.map((step) => (
             <button
-              key={scale.id}
+              key={step.label}
               type="button"
-              title={scale.note}
-              onClick={() => setScaleId(scale.id)}
-              className={cx(
-                'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-                scale.id === scaleId
-                  ? 'bg-primary-600 text-white'
-                  : 'text-[rgb(var(--text-secondary))] hover:bg-[rgb(var(--surface-sunken))]',
-              )}
+              onClick={() => sim.stepBy(step.hours)}
+              disabled={clockHours <= 0}
+              className="numeric rounded-md px-2 py-1 text-xs font-medium text-[rgb(var(--text-secondary))] transition-colors hover:bg-[rgb(var(--surface-sunken))] disabled:opacity-35"
             >
-              {scale.label}
+              {step.label}
+            </button>
+          ))}
+          <span className="text-faint px-1 text-xs">step</span>
+          {STEP_PRESETS.map((step) => (
+            <button
+              key={step.id}
+              type="button"
+              onClick={() => sim.stepBy(step.hours)}
+              className="numeric rounded-md px-2 py-1 text-xs font-medium text-[rgb(var(--text-secondary))] transition-colors hover:bg-[rgb(var(--surface-sunken))]"
+            >
+              {step.label}
             </button>
           ))}
         </div>
+
+        <Button
+          size="sm"
+          variant="secondary"
+          icon={ChevronLast}
+          onClick={sim.jumpToNextEvent}
+          disabled={!sim.nextEvent}
+          title={
+            sim.nextEvent
+              ? `Jump to: ${sim.nextEvent.text}`
+              : 'Every vessel is held, so nothing is due to happen'
+          }
+        >
+          Next event
+        </Button>
+
+        <label className="flex items-center gap-1.5">
+          <Clock size={14} className="text-faint" aria-hidden />
+          <span className="text-faint text-xs">Go to day</span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={jumpDay}
+            placeholder={String(Math.floor(clockHours / 24) + 1)}
+            onChange={(e) => setJumpDay(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              const day = Number(jumpDay)
+              if (Number.isFinite(day) && day >= 1) sim.jumpTo((day - 1) * 24)
+              setJumpDay('')
+            }}
+            aria-label="Jump to a simulated day"
+            className="numeric w-16 rounded-md border bg-transparent px-2 py-1 text-xs"
+            style={{ borderColor: 'rgb(var(--border-subtle))' }}
+          />
+        </label>
 
         <Button
           size="sm"
@@ -480,72 +836,105 @@ export default function Simulator() {
             {usingPlan ? 'Re-optimise' : 'Optimise & sail'}
           </Button>
         </div>
+
+        {/* Clock rate. These change how fast simulated time passes and nothing
+            else — a voyage is a function of simulated hours, so the same
+            voyage happens whichever of these is selected. */}
+        <div
+          className="flex w-full flex-wrap items-center gap-1.5 border-t pt-3"
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+          role="group"
+          aria-label="Simulation speed"
+        >
+          <span className="text-faint mr-1 text-xs">Clock rate</span>
+          {SIM_SPEEDS.map((scale) => (
+            <button
+              key={scale.id}
+              type="button"
+              title={scale.note}
+              onClick={() => setScaleId(scale.id)}
+              aria-pressed={scale.id === scaleId}
+              className={cx(
+                'rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
+                scale.id === scaleId
+                  ? 'bg-primary-600 text-white'
+                  : 'text-[rgb(var(--text-secondary))] hover:bg-[rgb(var(--surface-sunken))]',
+              )}
+            >
+              {scale.label}
+            </button>
+          ))}
+          <span className="text-faint ml-auto text-xs">{timeScale.note}</span>
+        </div>
       </div>
 
-      {/* Maps + panel */}
-      <div className="flex flex-col gap-3 xl:flex-row">
-        <div className="card relative min-w-0 flex-1 overflow-hidden p-0">
-          <div className={cx('relative', mapHeight)}>
-            {loading ? (
-              <div className="text-faint grid h-full place-items-center text-sm">
-                Loading the lane network…
-              </div>
-            ) : split ? (
-              <div className="grid h-full grid-cols-1 gap-px bg-[rgb(var(--border-strong))] lg:grid-cols-2">
-                <VoyageMap
-                  viewport={viewport}
-                  network={network}
-                  ships={baselineShips}
-                  clockRef={clockRef}
-                  running={running}
-                  timeScale={timeScale.hoursPerSecond}
-                  layers={layers}
-                  onTick={onBaselineTick}
-                  badge="Baseline · design speed, today's bunker"
-                />
-                <VoyageMap
-                  viewport={viewport}
-                  network={network}
-                  ships={planShips}
-                  clockRef={clockRef}
-                  running={running}
-                  timeScale={timeScale.hoursPerSecond}
-                  layers={layers}
-                  selectedId={selectedId}
-                  dimmedIds={dimmedIds}
-                  onSelect={setSelectedId}
-                  onTick={onTick}
-                  badge={`Optimised · ${planResult?.algorithm_name ?? ''}`}
-                  badgeTone="eco"
-                  legendFuels={legendFuels}
-                />
-              </div>
-            ) : (
+      {/* Operations grid — the map is the workspace, filling the viewport, with
+          the control/insight column beside it. */}
+      <div className="grid gap-3 xl:h-[calc(100vh-22rem)] xl:min-h-[520px] xl:grid-cols-[minmax(0,1fr)_clamp(320px,26vw,400px)]">
+        {/* Map */}
+        <div className="card relative h-[62vh] min-h-[420px] min-w-0 overflow-hidden p-0 xl:h-full">
+          {loading ? (
+            <div className="text-faint grid h-full place-items-center text-sm">
+              Loading the lane network…
+            </div>
+          ) : split ? (
+            <div className="grid h-full grid-cols-1 gap-px bg-[rgb(var(--border-strong))] lg:grid-cols-2">
               <VoyageMap
                 viewport={viewport}
                 network={network}
-                ships={ships}
-                clockRef={clockRef}
+                ships={baselineShips}
+                engineRef={engineRef}
                 running={running}
-                timeScale={timeScale.hoursPerSecond}
+                layers={layers}
+                badge="Baseline · design speed, today's bunker"
+              />
+              <VoyageMap
+                viewport={viewport}
+                network={network}
+                ships={planShips}
+                engineRef={engineRef}
+                running={running}
                 layers={layers}
                 selectedId={selectedId}
                 dimmedIds={dimmedIds}
-                activeLanes={activeLanes}
-                activePorts={activePorts}
                 onSelect={setSelectedId}
-                onTick={onTick}
-                onSelectLane={(name) => {
-                  const match = ships.find((s) => s.laneName === name)
-                  if (match) setSelectedId(match.id)
-                }}
+                badge={`Optimised · ${planResult?.algorithm_name ?? ''}`}
+                badgeTone="eco"
                 legendFuels={legendFuels}
               />
-            )}
+            </div>
+          ) : (
+            <VoyageMap
+              viewport={viewport}
+              network={network}
+              ships={ships}
+              engineRef={engineRef}
+              running={running}
+              layers={layers}
+              selectedId={selectedId}
+              dimmedIds={dimmedIds}
+              activeLanes={activeLanes}
+              activePorts={activePorts}
+              onSelect={setSelectedId}
+              onSelectLane={(name) => {
+                const match = ships.find((s) => s.laneName === name)
+                if (match) setSelectedId(match.id)
+              }}
+              legendFuels={legendFuels}
+            />
+          )}
 
-            {!split && (
-              <>
-                <div className="absolute left-3 top-3 flex flex-wrap gap-1.5">
+          {!split && !loading && (
+            <>
+              <div className="absolute left-3 top-3 flex max-w-[15rem] flex-col items-start gap-2">
+                <MapStatusOverlay
+                  running={running}
+                  clock={formatSimClock(clockHours)}
+                  rateLabel={timeScale.label}
+                  vessels={totals.vessels}
+                  realTime={formatRealTime(sim.realSeconds)}
+                />
+                <div className="pointer-events-auto flex flex-wrap gap-1.5">
                   {Object.entries(MAP_VIEWS).map(([key, view]) => (
                     <button
                       key={key}
@@ -557,140 +946,133 @@ export default function Simulator() {
                     </button>
                   ))}
                 </div>
-                <p className="absolute bottom-3 right-3 rounded-md bg-black/60 px-2 py-1 text-[0.65rem] text-slate-300">
-                  Drag to pan · scroll to zoom · space to pause
-                </p>
-              </>
-            )}
-
-            <div className="absolute right-3 top-3 z-10 flex flex-col gap-1.5">
-              <button
-                type="button"
-                onClick={() => zoomBy(0.7)}
-                aria-label="Zoom in"
-                className="rounded-md bg-black/70 p-1.5 text-slate-100 transition-colors hover:bg-black/85"
-              >
-                <ZoomIn size={15} />
-              </button>
-              <button
-                type="button"
-                onClick={() => zoomBy(1.43)}
-                aria-label="Zoom out"
-                className="rounded-md bg-black/70 p-1.5 text-slate-100 transition-colors hover:bg-black/85"
-              >
-                <ZoomOut size={15} />
-              </button>
-              <button
-                type="button"
-                onClick={centreOnSelected}
-                disabled={!selectedId}
-                aria-label="Centre on selected vessel"
-                className="rounded-md bg-black/70 p-1.5 text-slate-100 transition-colors hover:bg-black/85 disabled:opacity-40"
-              >
-                <Crosshair size={15} />
-              </button>
-            </div>
-          </div>
-
-          {/* Live ticker */}
-          <div
-            className="grid grid-cols-2 gap-3 border-t px-4 py-3 sm:grid-cols-3 lg:grid-cols-6"
-            style={{ borderColor: 'rgb(var(--border-subtle))' }}
-          >
-            <Ticker
-              label="At sea"
-              value={`${totals.atSea}/${totals.vessels}`}
-              icon={ShipIcon}
-              tone="text-primary-400"
-            />
-            <Ticker label="Alongside" value={totals.inPort} icon={Anchor} tone="text-slate-400" />
-            <Ticker
-              label="Mean speed"
-              value={totals.avgSpeed.toFixed(1)}
-              unit="kn"
-              icon={Gauge}
-              tone="text-amber-400"
-            />
-            <Ticker
-              label="Fuel burnt"
-              value={compact(totals.fuel)}
-              unit="t"
-              icon={Droplets}
-              tone="text-sky-400"
-              delta={divergence ? `−${divergence.fuel.toFixed(0)}%` : undefined}
-            />
-            <Ticker
-              label="CO₂e emitted"
-              value={compact(totals.co2)}
-              unit="t"
-              icon={Leaf}
-              tone="text-eco-400"
-              delta={divergence ? `−${divergence.co2.toFixed(0)}%` : undefined}
-            />
-            <Ticker
-              label="Voyage cost"
-              value={usd(totals.cost, { compact: true })}
-              icon={Wind}
-              tone="text-violet-400"
-              delta={divergence ? `−${divergence.cost.toFixed(0)}%` : undefined}
-            />
-          </div>
-
-          {split && divergence && (
-            <div
-              className="flex flex-wrap items-center gap-x-6 gap-y-2 border-t bg-eco-50/60 px-4 py-3 text-sm dark:bg-eco-950/20"
-              style={{ borderColor: 'rgb(var(--border-subtle))' }}
-            >
-              <span className="flex items-center gap-2 font-semibold text-eco-700 dark:text-eco-300">
-                <TrendingDown size={16} aria-hidden />
-                Gap after {formatSimClock(clockHours).toLowerCase()}
-              </span>
-              <span className="numeric">
-                {num(divergence.absFuel, 0)} t less bunker per vessel
-              </span>
-              <span className="numeric">{num(divergence.absCo2, 0)} t less CO₂e per vessel</span>
-              <span className="text-faint text-xs">
-                Compared per vessel, not per fleet — the two sides carry different numbers of
-                ships, and totals alone would flatter whichever has fewer.
-              </span>
-            </div>
+              </div>
+              <p className="absolute bottom-3 right-3 rounded-md bg-black/60 px-2 py-1 text-[0.65rem] text-slate-300">
+                Drag to pan · scroll to zoom · space to pause · shift + ← → to step an hour
+              </p>
+            </>
           )}
+
+          <div className="absolute right-3 top-3 z-10 flex flex-col gap-1.5">
+            <button
+              type="button"
+              onClick={() => zoomBy(0.7)}
+              aria-label="Zoom in"
+              className="rounded-md bg-black/70 p-1.5 text-slate-100 transition-colors hover:bg-black/85"
+            >
+              <ZoomIn size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => zoomBy(1.43)}
+              aria-label="Zoom out"
+              className="rounded-md bg-black/70 p-1.5 text-slate-100 transition-colors hover:bg-black/85"
+            >
+              <ZoomOut size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={centreOnSelected}
+              disabled={!selectedId}
+              aria-label="Centre on selected vessel"
+              className="rounded-md bg-black/70 p-1.5 text-slate-100 transition-colors hover:bg-black/85 disabled:opacity-40"
+            >
+              <Crosshair size={15} />
+            </button>
+          </div>
         </div>
 
-        {/* Side panel */}
-        <div className="shrink-0 space-y-3 xl:w-80">
-          <div className="card p-4">
-            <h2 className="flex items-center gap-2 text-sm font-semibold">
-              <Layers size={15} aria-hidden /> Map layers
-            </h2>
-            <div className="mt-3 space-y-3">
-              <LayerToggles layers={layers} setLayers={setLayers} />
-              <div className="grid grid-cols-2 gap-2">
-                <Select
-                  value={fuelFilter}
-                  onChange={(e) => setFuelFilter(e.target.value)}
-                  options={fuelOptions}
-                  aria-label="Filter by fuel"
-                />
-                <Select
-                  value={typeFilter}
-                  onChange={(e) => setTypeFilter(e.target.value)}
-                  options={typeOptions}
-                  aria-label="Filter by vessel class"
-                />
-              </div>
+        {/* Control / insight column — one scroll, sections collapse to share it */}
+        <aside className="flex min-h-0 flex-col gap-3 xl:overflow-y-auto xl:pr-0.5">
+          {/* Fleet — the priority after the map */}
+          <CollapsibleCard
+            title={`Fleet (${fleetCounts.all})`}
+            icon={ShipIcon}
+            open={openSections.fleet}
+            onToggle={() => toggleSection('fleet')}
+            summary={`${fleetCounts.sea} at sea · ${fleetCounts.port} in port${
+              fleetCounts.held ? ` · ${fleetCounts.held} held` : ''
+            }`}
+          >
+            <div className="flex flex-wrap items-center gap-1.5 px-3 pt-2.5">
+              {FLEET_STATUS.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setStatusFilter(f.id)}
+                  aria-pressed={statusFilter === f.id}
+                  className={cx(
+                    'rounded-full px-2.5 py-1 text-xs font-medium transition-colors',
+                    statusFilter === f.id
+                      ? 'bg-primary-600 text-white'
+                      : 'bg-[rgb(var(--surface-sunken))] text-[rgb(var(--text-secondary))] hover:bg-[rgb(var(--surface-raised))]',
+                  )}
+                >
+                  {f.label}{' '}
+                  <span className="numeric opacity-70">{fleetCounts[f.id]}</span>
+                </button>
+              ))}
+              {selectedId && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(null)}
+                  className="text-faint ml-auto text-xs underline-offset-2 hover:underline"
+                >
+                  Clear
+                </button>
+              )}
             </div>
-          </div>
+            <div className="max-h-[24rem] space-y-1.5 overflow-y-auto p-2 xl:max-h-[26rem]">
+              {shownFleet.length === 0 ? (
+                <p className="text-faint px-2 py-6 text-center text-sm">
+                  No vessels match this filter.
+                </p>
+              ) : (
+                shownFleet.map((snapshot) => (
+                  <VesselRow
+                    key={snapshot.id}
+                    snapshot={snapshot}
+                    selected={snapshot.id === selectedId}
+                    onSelect={setSelectedId}
+                    onToggleHold={sim.toggleHold}
+                    onSpeed={sim.setSpeed}
+                  />
+                ))
+              )}
+            </div>
+          </CollapsibleCard>
 
+          {/* Event timeline */}
+          <CollapsibleCard
+            title="Event timeline"
+            icon={ListOrdered}
+            open={openSections.timeline}
+            onToggle={() => toggleSection('timeline')}
+            summary={sim.nextEvent ? `next in ${formatDuration(sim.nextEvent.inHours)}` : 'quiet'}
+            right={<span className="text-faint numeric text-xs">{sim.events.length}</span>}
+          >
+            <div className="max-h-[16rem] overflow-y-auto p-2">
+              <TimelineFeed events={sim.events} onSelect={setSelectedId} />
+            </div>
+          </CollapsibleCard>
+
+          {/* Carbon intensity — compact by default */}
           {ciiSummary && (
-            <div className="card p-4">
+            <CollapsibleCard
+              title="Carbon intensity"
+              icon={Leaf}
+              open={openSections.carbon}
+              onToggle={() => toggleSection('carbon')}
+              summary={`${pct(ciiSummary.compliant_pct, 0)} ≥ C`}
+              bodyClass="p-4"
+            >
               <div className="flex items-baseline justify-between gap-2">
-                <h2 className="text-sm font-semibold">Carbon intensity</h2>
+                <span className="text-faint text-xs">At C or better</span>
                 <Badge tone={ciiSummary.compliant_pct >= 60 ? 'eco' : 'warning'}>
-                  {pct(ciiSummary.compliant_pct, 0)} at C or better
+                  {pct(ciiSummary.compliant_pct, 0)}
                 </Badge>
               </div>
-              <div className="mt-3 flex h-2.5 overflow-hidden rounded-full">
+              <div className="mt-2.5 flex h-2.5 overflow-hidden rounded-full">
                 {['A', 'B', 'C', 'D', 'E'].map((band) => {
                   const n = ciiSummary.distribution[band] ?? 0
                   if (!n) return null
@@ -720,68 +1102,107 @@ export default function Simulator() {
                 ))}
               </div>
               {ciiSummary.at_risk?.length > 0 && (
-                <p className="text-faint mt-2.5 text-xs">
+                <p className="mt-2.5 flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                  <TrendingDown size={13} className="mt-0.5 shrink-0" aria-hidden />
                   {ciiSummary.at_risk.length} vessel
-                  {ciiSummary.at_risk.length === 1 ? '' : 's'} at D or E on this plan — three
-                  consecutive years at D, or one at E, forces a corrective action plan.
+                  {ciiSummary.at_risk.length === 1 ? '' : 's'} at D or E — three years at D, or one
+                  at E, forces a corrective action plan.
                 </p>
               )}
-            </div>
+            </CollapsibleCard>
           )}
 
-          <div className="card flex flex-col p-0">
-            <header
-              className="flex items-center justify-between gap-2 border-b px-4 py-3"
-              style={{ borderColor: 'rgb(var(--border-subtle))' }}
-            >
-              <h2 className="text-sm font-semibold">Fleet ({visibleShips.length})</h2>
-              {selectedId && (
-                <button
-                  type="button"
-                  onClick={() => setSelectedId(null)}
-                  className="text-faint text-xs underline-offset-2 hover:underline"
-                >
-                  Clear
-                </button>
-              )}
-            </header>
-            <div className="max-h-[24rem] space-y-1.5 overflow-y-auto p-2 xl:max-h-[calc(100vh-40rem)]">
-              {visibleShips.length === 0 && (
-                <p className="text-faint px-2 py-6 text-center text-sm">
-                  No vessels match the current filter.
-                </p>
-              )}
-              {visibleShips.map((ship) => {
-                const snapshot = snapshotById[ship.id]
-                if (!snapshot) return null
-                return (
-                  <VesselRow
-                    key={ship.id}
-                    snapshot={snapshot}
-                    selected={ship.id === selectedId}
-                    onSelect={setSelectedId}
-                  />
-                )
-              })}
+          {/* Simulation controls */}
+          <CollapsibleCard
+            title="Simulation controls"
+            icon={Gauge}
+            open={openSections.controls}
+            onToggle={() => toggleSection('controls')}
+            summary={`dwell ${sim.decisions.dwellHours} h`}
+            bodyClass="p-4"
+          >
+            <label className="block">
+              <span className="text-faint flex items-baseline justify-between text-xs">
+                <span>Port dwell</span>
+                <span className="numeric">{sim.decisions.dwellHours} h</span>
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={72}
+                step={1}
+                value={sim.decisions.dwellHours}
+                onChange={(e) => sim.setDwellHours(Number(e.target.value))}
+                className="mt-1 w-full accent-[rgb(var(--primary-500))]"
+                aria-label="Port dwell time in hours"
+              />
+              <span className="text-faint mt-1 block text-[0.68rem]">
+                How long a vessel works cargo before turning round. Default {DEFAULT_DWELL_HOURS} h.
+                Changing it replays the whole run, so arrivals already logged move with it.
+              </span>
+            </label>
+            <div className="mt-3 flex gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={Hand}
+                className="flex-1"
+                onClick={() => sim.holdAll(shownFleet.map((s) => s.id))}
+                disabled={shownFleet.length === 0}
+              >
+                Hold all
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={Play}
+                className="flex-1"
+                onClick={() => sim.releaseAll(visibleShips.map((s) => s.id))}
+                disabled={sim.tally.held === 0}
+              >
+                Release all
+              </Button>
             </div>
-          </div>
+          </CollapsibleCard>
+
+          {/* Map layers + filters */}
+          <CollapsibleCard
+            title="Map layers & filters"
+            icon={Layers}
+            open={openSections.layers}
+            onToggle={() => toggleSection('layers')}
+            bodyClass="space-y-3 p-4"
+          >
+            <LayerToggles layers={layers} setLayers={setLayers} />
+            <div className="grid grid-cols-2 gap-2">
+              <Select
+                value={fuelFilter}
+                onChange={(e) => setFuelFilter(e.target.value)}
+                options={fuelOptions}
+                aria-label="Filter vessels by fuel"
+              />
+              <Select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                options={typeOptions}
+                aria-label="Filter vessels by class"
+              />
+            </div>
+          </CollapsibleCard>
 
           {!usingPlan && !loading && (
-            <Alert tone="info" title="Baseline fleet">
-              Vessels are sailing their home lanes at design speed on today&apos;s default bunker.
-              Run the optimiser to redeploy them, then switch to split view to watch the gap open
-              up.
-            </Alert>
+            <div className="shrink-0">
+              <Alert tone="info" title="Baseline fleet">
+                Vessels are sailing their home lanes at design speed on today&apos;s default bunker.
+                Run the optimiser to redeploy them, then switch to split view to watch the gap open
+                up.
+              </Alert>
+            </div>
           )}
 
           {layers.eca && network.ecaLanes.some((l) => l.eca_fraction > 0) && (
-            <div className="card p-4">
+            <div className="card shrink-0 p-4">
               <h2 className="text-sm font-semibold">Emission control areas</h2>
-              <p className="text-faint mt-1 text-xs">
-                Fuel sulphur is capped at 0.10% inside one, against 0.50% globally. A ship on
-                residual fuel has to switch to distillate for that stretch, and the optimiser
-                prices the switch.
-              </p>
               <ul className="mt-2.5 space-y-1 text-xs">
                 {network.ecaLanes
                   .filter((l) => l.eca_fraction > 0)
@@ -798,12 +1219,8 @@ export default function Simulator() {
           )}
 
           {layers.weather && network.lanes.length > 0 && (
-            <div className="card p-4">
+            <div className="card shrink-0 p-4">
               <h2 className="text-sm font-semibold">Roughest lanes</h2>
-              <p className="text-faint mt-1 text-xs">
-                Annual-mean Beaufort. The optimiser charges a{' '}
-                <span className="numeric">1 + 0.02·B^1.5</span> penalty on propulsion fuel.
-              </p>
               <ul className="mt-2.5 space-y-1 text-xs">
                 {[...network.lanes]
                   .sort((a, b) => b.typical_beaufort - a.typical_beaufort)
@@ -819,8 +1236,78 @@ export default function Simulator() {
               </ul>
             </div>
           )}
-        </div>
+        </aside>
       </div>
+
+      {/* Bottom metrics bar — the fleet's live totals, full width */}
+      <div className="card grid grid-cols-2 gap-x-6 gap-y-3 px-4 py-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-8">
+        <Metric
+          label="At sea"
+          value={`${totals.atSea}/${totals.vessels}`}
+          icon={ShipIcon}
+          tone="text-primary-400"
+        />
+        <Metric label="Alongside" value={totals.inPort} icon={Anchor} tone="text-slate-400" />
+        <Metric
+          label="Held"
+          value={totals.held}
+          icon={Hand}
+          tone={totals.held ? 'text-amber-400' : 'text-slate-400'}
+        />
+        <Metric
+          label="Mean speed"
+          value={totals.avgSpeed.toFixed(1)}
+          unit="kn"
+          icon={Gauge}
+          tone="text-amber-400"
+        />
+        <Metric
+          label="Mean ETA"
+          value={meanEta == null ? '—' : formatDuration(meanEta)}
+          icon={Hourglass}
+          tone="text-sky-400"
+        />
+        <Metric
+          label="Fuel burnt"
+          value={compact(totals.fuel)}
+          unit="t"
+          icon={Droplets}
+          tone="text-sky-400"
+          delta={divergence ? `−${divergence.fuel.toFixed(0)}%` : undefined}
+        />
+        <Metric
+          label="CO₂e emitted"
+          value={compact(totals.co2)}
+          unit="t"
+          icon={Leaf}
+          tone="text-eco-400"
+          delta={divergence ? `−${divergence.co2.toFixed(0)}%` : undefined}
+        />
+        <Metric
+          label="Voyage cost"
+          value={usd(totals.cost, { compact: true })}
+          icon={Wind}
+          tone="text-violet-400"
+          delta={divergence ? `−${divergence.cost.toFixed(0)}%` : undefined}
+        />
+      </div>
+
+      {split && divergence && (
+        <div
+          className="card flex flex-wrap items-center gap-x-6 gap-y-2 border-l-4 border-l-eco-500 px-4 py-3 text-sm"
+        >
+          <span className="flex items-center gap-2 font-semibold text-eco-700 dark:text-eco-300">
+            <TrendingDown size={16} aria-hidden />
+            Optimised vs baseline after {formatSimClock(clockHours).toLowerCase()}
+          </span>
+          <span className="numeric">{num(divergence.absFuel, 0)} t less bunker per vessel</span>
+          <span className="numeric">{num(divergence.absCo2, 0)} t less CO₂e per vessel</span>
+          <span className="text-faint text-xs">
+            Compared per vessel, not per fleet — the two sides carry different numbers of ships, and
+            totals alone would flatter whichever has fewer.
+          </span>
+        </div>
+      )}
     </div>
   )
 }
