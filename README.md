@@ -20,8 +20,6 @@ This platform searches that trade-off space with quantum-inspired metaheuristics
 and reports a real Pareto front, not a single compromised answer.
 
 ## What it does
-## All Details
-######
 
 | Module | What it gives you |
 | --- | --- |
@@ -157,7 +155,8 @@ These are demo credentials in a public repository. For anything real, use
 `python -m backend.manage bootstrap` instead — it prompts for a password and
 creates a single administrator — and change or delete the seeded accounts.
 
-Administrators get an **Employees** page in the sidebar: add staff, search,
+Administrators get an **Employees** page at `/admin` (not linked from the
+sidebar — go there by URL): add staff, search,
 edit, reset a password, deactivate, delete. Everything on it goes through
 `/api/admin/*`, which is behind an administrator check **on the server** —
 hiding the sidebar link is presentation, not a permission.

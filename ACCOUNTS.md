@@ -424,8 +424,9 @@ database at all except through the routes above.
 
 ## 12. The admin dashboard
 
-**Employees** in the sidebar, or <http://localhost:5173/admin>. Administrators
-only.
+<http://localhost:5173/admin>. Administrators only, and **not linked from the
+sidebar** — navigate to it by URL or bookmark it. The page, the route guard
+and the API are all unchanged; only the menu entry was removed.
 
 - Add, with full validation and no duplicate IDs
 - Search across Employee ID, name, department and email; filter by role and
@@ -437,7 +438,7 @@ only.
 - Delete
 - Counts across the top: accounts, active, administrators
 
-The link is hidden from ordinary employees and `/admin` redirects them away.
+There is no link to it anywhere, and `/admin` redirects non-administrators away.
 **Neither of those is the permission.** `require_admin` is declared on the
 admin *router*, so every route under it — including any added later — refuses a
 non-administrator with 403 regardless of what the browser does. There is a test

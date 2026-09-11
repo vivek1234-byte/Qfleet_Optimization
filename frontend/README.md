@@ -41,7 +41,7 @@ npm run lint         # oxlint
 | `/fleet` | The 20-vessel registry and the 16 trade lanes |
 | `/scenarios` | Fuel comparison, transition plan, shore power, fuel reference |
 | `/benchmarks` | Multi-seed solver benchmarks, scalability, metric definitions |
-| `/admin` | **Employees** — accounts and access. Administrators only |
+| `/admin` | **Employees** — accounts and access. Administrators only, and deliberately not in the sidebar: reach it by URL |
 
 Every endpoint the API exposes is reachable from one of these.
 
@@ -82,8 +82,11 @@ zero API calls until you press Sign in.
 
 ## Employees (`/admin`)
 
-Administrators only, both in the router (`RequireAdmin`) and in the sidebar
-(`navItemsFor`). Add, search, edit, reset a password, deactivate, delete.
+Administrators only, enforced by `RequireAdmin` in the router and by
+`require_admin` on the server. It is **not in the sidebar** — the nav entry
+carries `hidden: true`, so `navItemsFor` drops it for everyone while the route
+and the header title keep working. Add, search, edit, reset a password,
+deactivate, delete.
 Nothing here can read a password back — the API returns no hash, ever — so the
 form is write-only and "reset" is the whole recovery story.
 
