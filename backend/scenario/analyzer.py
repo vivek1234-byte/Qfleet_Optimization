@@ -357,12 +357,16 @@ class ScenarioAnalyzer:
         }
 
 
+# A representative mixed fleet drawn from the registry. Consumption is tonnes
+# per planning period (a month of typical trading for each class).
 DEFAULT_FLEET_CONFIG: Dict[str, Any] = {
     "vessels": [
-        {"id": 1, "name": "MV Aurora", "fuel_type": "HFO", "fuel_consumption": 500},
-        {"id": 2, "name": "MV Borealis", "fuel_type": "MGO", "fuel_consumption": 300},
-        {"id": 3, "name": "MV Calypso", "fuel_type": "HFO", "fuel_consumption": 750},
-        {"id": 4, "name": "MV Dorado", "fuel_type": "VLSFO", "fuel_consumption": 420},
-        {"id": 5, "name": "MV Everest", "fuel_type": "LNG", "fuel_consumption": 380},
+        {"id": 1, "name": "MV Sagar Pratap",   "fuel_type": "VLSFO", "fuel_consumption": 1_450},
+        {"id": 2, "name": "MV Mundra Pioneer", "fuel_type": "VLSFO", "fuel_consumption": 1_820},
+        {"id": 3, "name": "MV Desh Vaibhav",   "fuel_type": "HFO",   "fuel_consumption": 620},
+        {"id": 4, "name": "MV Jag Arnav",      "fuel_type": "HFO",   "fuel_consumption": 480},
+        {"id": 5, "name": "MT Nilgiri Spirit", "fuel_type": "MGO",   "fuel_consumption": 890},
+        {"id": 6, "name": "MT Aravalli Pride", "fuel_type": "VLSFO", "fuel_consumption": 1_120},
+        {"id": 7, "name": "MV Kaveri Express", "fuel_type": "LNG",   "fuel_consumption": 940},
     ]
 }

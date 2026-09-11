@@ -1,0 +1,248 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Design tokens. Every surface, border and text colour is a variable, so the
+   dark theme is a single block of overrides rather than `dark:` classes
+   scattered through every component.
+   ------------------------------------------------------------------------ */
+@layer base {
+  :root {
+    --surface-page: 248 250 252;
+    --surface-card: 255 255 255;
+    --surface-raised: 248 250 252;
+    --surface-sunken: 241 245 249;
+    --border-subtle: 226 232 240;
+    --border-strong: 203 213 225;
+    --text-primary: 15 23 42;
+    --text-secondary: 71 85 105;
+    --text-muted: 100 116 139;
+    --chart-grid: 226 232 240;
+    --chart-axis: 148 163 184;
+    /* Map palette. The ocean stays dark in both themes — a light-blue sea
+       makes the vessel markers and lane colours unreadable. */
+    --map-ocean: 12 25 42;
+    --map-ocean-deep: 8 17 30;
+    --map-land: 39 56 76;
+    --map-coast: 74 100 128;
+    --map-graticule: 45 66 90;
+    color-scheme: light;
+  }
+
+  .dark {
+    --surface-page: 11 16 26;
+    --surface-card: 18 25 38;
+    --surface-raised: 25 33 48;
+    --surface-sunken: 14 20 31;
+    --border-subtle: 35 45 63;
+    --border-strong: 51 65 85;
+    --text-primary: 236 241 248;
+    --text-secondary: 165 179 199;
+    --text-muted: 130 145 166;
+    --chart-grid: 35 45 63;
+    --chart-axis: 100 116 139;
+    --map-ocean: 9 18 31;
+    --map-ocean-deep: 6 12 21;
+    --map-land: 30 43 60;
+    --map-coast: 61 84 110;
+    --map-graticule: 34 50 70;
+    color-scheme: dark;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: rgb(var(--surface-page));
+    color: rgb(var(--text-primary));
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Visible focus for keyboard users on every interactive element. The old UI
+     had none, which made the forms unusable without a mouse. */
+  :focus-visible {
+    outline: 2px solid theme('colors.primary.500');
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: theme('colors.primary.200');
+    color: theme('colors.primary.950');
+  }
+
+  .dark ::selection {
+    background-color: theme('colors.primary.800');
+    color: theme('colors.primary.50');
+  }
+
+  /* Thin, theme-aware scrollbars. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--border-strong)) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--border-strong));
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .surface {
+    background-color: rgb(var(--surface-card));
+    border-color: rgb(var(--border-subtle));
+  }
+
+  .text-body {
+    color: rgb(var(--text-secondary));
+  }
+
+  .text-faint {
+    color: rgb(var(--text-muted));
+  }
+
+  .card {
+    @apply surface rounded-xl border shadow-card;
+  }
+
+  .field-label {
+    @apply mb-1.5 block text-sm font-medium;
+    color: rgb(var(--text-secondary));
+  }
+
+  .field-control {
+    @apply w-full rounded-lg border px-3 py-2 text-sm transition-colors;
+    background-color: rgb(var(--surface-card));
+    border-color: rgb(var(--border-strong));
+    color: rgb(var(--text-primary));
+  }
+
+  .field-control::placeholder {
+    color: rgb(var(--text-muted));
+  }
+
+  .field-control:hover:not(:disabled) {
+    border-color: theme('colors.primary.400');
+  }
+
+  .field-control:focus {
+    @apply outline-none ring-2;
+    border-color: theme('colors.primary.500');
+    --tw-ring-color: theme('colors.primary.500 / 25%');
+  }
+
+  .field-control:disabled {
+    @apply cursor-not-allowed opacity-60;
+    background-color: rgb(var(--surface-sunken));
+  }
+
+  .field-control[aria-invalid='true'] {
+    border-color: theme('colors.rose.500');
+  }
+
+  /* Recharts injects its own focus outline on every segment; suppress it. */
+  .recharts-wrapper :focus {
+    outline: none;
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden rounded;
+    background-color: rgb(var(--surface-sunken));
+  }
+
+  .skeleton::after {
+    @apply absolute inset-0 animate-shimmer;
+    content: '';
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--border-subtle) / 0.8),
+      transparent
+    );
+    transform: translateX(-100%);
+  }
+
+  .numeric {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Voyage simulator
+   ------------------------------------------------------------------------ */
+@layer components {
+  .map-surface {
+    background-color: rgb(var(--map-ocean));
+  }
+
+  /* Lane lines flow towards the destination. Paused simulation pauses these
+     too, so a frozen screen never looks like it is still running. */
+  .lane-flow {
+    stroke-dasharray: 1.6 2.4;
+    animation: lane-dash 2.4s linear infinite;
+  }
+
+  .lane-flow.is-paused {
+    animation-play-state: paused;
+  }
+
+  @keyframes lane-dash {
+    to {
+      stroke-dashoffset: -4;
+    }
+  }
+
+  .ship-marker {
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+  }
+
+  .ship-marker:hover .ship-hull {
+    filter: brightness(1.35);
+  }
+
+  .pulse-ring {
+    animation: pulse-ring 2.6s ease-out infinite;
+    transform-origin: center;
+  }
+
+  @keyframes pulse-ring {
+    0% {
+      r: 0.35;
+      opacity: 0.75;
+    }
+    100% {
+      r: 2.4;
+      opacity: 0;
+    }
+  }
+
+  /* A thin ticker of live figures under the map. */
+  .ticker-value {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+}

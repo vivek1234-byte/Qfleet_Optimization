@@ -48,11 +48,23 @@ baseline plan, so a run can never report a result worse than doing nothing.
 - **Backend** — Python 3.9+, FastAPI, Uvicorn, Pydantic v2
 - **Optimisation** — NumPy (fully vectorised), pymoo for quality indicators
 - **ML** — scikit-learn, XGBoost, optional PyTorch
-- **Frontend** — React 19, Vite, Tailwind CSS, Recharts, React Router
+- **Frontend** — React 19, Vite, Tailwind, Recharts, and a hand-built inline-SVG
+  chart of the world for the voyage simulator (no map library, no tile server)
+
+## The web interface
+
+`frontend/` is a seven-page application covering every endpoint the API
+exposes. The one worth opening first is **Live Simulator**: the fleet sails the
+real Indian trade-lane network — through Suez, Bab-el-Mandeb, Hormuz and
+Malacca — in accelerated time, coloured by fuel, with fuel burnt, CO2 emitted
+and voyage cost ticking up live. Run the optimiser and the same vessels
+redeploy onto the plan the solver produced.
+
+Everything it needs is bundled: coastlines, routes, fonts, styles. It makes no
+network call except to this API, which matters when the venue Wi-Fi does not
+work. See `frontend/README.md` for the details.
 
 ## Quick start
-
-### 1. Backend
 
 ```bash
 cd backend
@@ -72,23 +84,27 @@ Start the API:
 
 ```bash
 cd backend
-uvicorn main:app --reload
+uvicorn main:app --reload --host 127.0.0.1
 ```
 
+Start the web interface (needs Node 18+), in a second terminal:
+
+```bash
+cd frontend
+npm install          # first run only
+npm run dev
+```
+
+- **Web UI: <http://localhost:5173>**
 - API: <http://localhost:8000>
 - Interactive docs: <http://localhost:8000/docs>
 - Health: <http://localhost:8000/api/health>
 
-### 2. Frontend
+Or simply run `start.bat` (Windows) / `./start.sh` — it does all of the above
+and opens both servers. `./start.sh --api-only` skips the UI.
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-Open <http://localhost:5173>. The Vite dev server proxies `/api` to the backend,
-so there is nothing to configure and no CORS to fight.
+Both servers bind to `127.0.0.1`, so nothing on the local network can reach
+them. That is deliberate; change it only for a considered deployment.
 
 ## API
 
@@ -162,7 +178,6 @@ Every setting is an environment variable, read in `backend/config.py`:
 | `QGF_MAX_ITERATIONS` | `400` | Guard rail on solver iterations |
 | `QGF_MAX_POPULATION` | `200` | Guard rail on population size |
 
-Frontend settings live in `frontend/.env` — see `.env.example`.
 
 ## Tests
 
@@ -205,11 +220,17 @@ quantum-green-fleet/
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── components/              # AppShell, ui primitives, chart theming
-│   │   ├── hooks/                   # useAsync, useFetch, useTheme
-│   │   ├── lib/                     # api client, formatters, nav model
-│   │   └── pages/                   # Dashboard, Prediction, Optimizer, Scenarios, Benchmarks
-│   └── package.json
+│   │   ├── components/              # AppShell, ui primitives, charts,
+│   │   │                            #   WorldMap, ShipLayer (the simulator)
+│   │   ├── data/
+│   │   │   ├── land.js              # Natural Earth coastlines, baked in
+│   │   │   └── geography.js         # ports, lane waypoints, projection
+│   │   ├── hooks/                   # useApi, useTheme
+│   │   ├── lib/                     # api.js, domain.js, simulation.js, …
+│   │   └── pages/                   # one file per route
+│   ├── vite.config.js               # proxies /api to the backend
+│   └── README.md
+├── apitest.py                       # 61-check live API conformance test
 ├── train_model.py
 └── README.md
 ```
