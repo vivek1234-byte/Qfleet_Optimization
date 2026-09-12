@@ -1,0 +1,45 @@
+# Render blueprint: the API as a Docker web service.
+#
+# Render is the backend half of the deployment because Vercel cannot host this
+# API — its dependency tree unzips to roughly 600 MB against Vercel's 250 MB
+# function limit, and the accounts database needs a writable filesystem, which
+# serverless does not have. The frontend still goes to Vercel.
+services:
+  - type: web
+    name: qfleet-api
+    runtime: docker
+    plan: free
+    # Closest region to India; move it if the judges are elsewhere.
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      # Signing key for session tokens. Generated once by Render and kept.
+      # Left unset the app invents one per process, which logs everyone out on
+      # every restart — and a free instance restarts whenever it wakes.
+      - key: QGF_JWT_SECRET
+        generateValue: true
+
+      # Demo logins (ADMIN001 / EMP001). Their passwords are public in this
+      # repository: anyone who reads it can sign in as an administrator. Keep
+      # this true for judging, then set it to false and create a real
+      # administrator with `python -m backend.manage bootstrap`.
+      - key: QGF_SEED_DEMO
+        value: "true"
+
+      # The deployed frontend's origin, e.g. https://qfleet.vercel.app
+      # Comma-separated if there is more than one. No trailing slash — the
+      # browser compares origins exactly, and a stray slash reads as a
+      # different site.
+      - key: QGF_CORS_ORIGINS
+        sync: false
+
+      # Optional. Unset, accounts live in SQLite inside the container, which a
+      # free instance loses when it sleeps — the seeded demo logins come back
+      # on the next boot, but employees added through the admin screen do not.
+      # Point this at a Postgres URL (Neon's free tier, or Render's own) and
+      # they survive:
+      #   postgresql+psycopg://user:password@host/dbname
+      - key: QGF_DATABASE_URL
+        sync: false

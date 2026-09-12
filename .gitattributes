@@ -1,0 +1,5 @@
+# The container entrypoint is executed by /bin/sh inside Linux. Checked out on
+# Windows with CRLF endings, its shebang line ends in \r and Docker fails with
+# an "exec format error" that names no file and explains nothing. Pin it.
+*.sh text eol=lf
+Dockerfile text eol=lf
