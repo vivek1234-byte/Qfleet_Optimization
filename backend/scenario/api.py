@@ -14,7 +14,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import Depends, APIRouter
+from auth.permissions import reference_data, require_module
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:
@@ -112,20 +113,20 @@ def _analyzer_for(fleet: Optional[FleetInput]) -> ScenarioAnalyzer:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-@router.get("/fuels")
+@router.get("/fuels", dependencies=[Depends(reference_data())])
 def list_fuels() -> List[Dict[str, Any]]:
     """The fuel reference table — the same data the optimizer uses."""
     return [fuel.to_dict() for fuel in get_all_fuels()]
 
 
-@router.get("/fleet")
+@router.get("/fleet", dependencies=[Depends(require_module('scenarios'))])
 def get_fleet() -> Dict[str, Any]:
     """The current session fleet and its base-case footprint."""
     with _lock:
         return _default_analyzer.fleet_summary()
 
 
-@router.put("/fleet")
+@router.put("/fleet", dependencies=[Depends(require_module('scenarios'))])
 def set_fleet(fleet: FleetInput) -> Dict[str, Any]:
     """Replace the session fleet used when a request omits ``fleet``."""
     global _default_analyzer
@@ -138,7 +139,7 @@ def set_fleet(fleet: FleetInput) -> Dict[str, Any]:
         return _default_analyzer.fleet_summary()
 
 
-@router.post("/analyze")
+@router.post("/analyze", dependencies=[Depends(require_module('scenarios'))])
 def run_scenario_analysis(request: AnalyzeRequest) -> Dict[str, Any]:
     """Analyse switching some or all of the fleet to a target fuel."""
     analyzer = _analyzer_for(request.fleet)
@@ -149,7 +150,7 @@ def run_scenario_analysis(request: AnalyzeRequest) -> Dict[str, Any]:
     return {"base": analyzer.base_result.to_dict(), "scenario": result.to_dict()}
 
 
-@router.post("/compare")
+@router.post("/compare", dependencies=[Depends(require_module('scenarios'))])
 def compare_scenarios(request: CompareRequest) -> Dict[str, Any]:
     """Compare the base case against several fuel-switch scenarios."""
     analyzer = _analyzer_for(request.fleet)
@@ -172,7 +173,7 @@ def compare_scenarios(request: CompareRequest) -> Dict[str, Any]:
     }
 
 
-@router.post("/shore-power")
+@router.post("/shore-power", dependencies=[Depends(require_module('scenarios'))])
 def analyze_shore_power(request: ShorePowerRequest) -> Dict[str, Any]:
     """Emissions and cost impact of taking shore power at berth."""
     analyzer = _analyzer_for(request.fleet)
@@ -182,7 +183,7 @@ def analyze_shore_power(request: ShorePowerRequest) -> Dict[str, Any]:
         raise ValidationError(str(exc)) from exc
 
 
-@router.post("/transition-plan")
+@router.post("/transition-plan", dependencies=[Depends(require_module('scenarios'))])
 def transition_plan(request: TransitionRequest) -> Dict[str, Any]:
     """A year-by-year plan for converting the fleet to a target fuel."""
     analyzer = _analyzer_for(request.fleet)

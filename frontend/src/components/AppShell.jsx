@@ -15,7 +15,8 @@ import { usePolling } from '../hooks/useApi'
 import { useTheme } from '../hooks/useTheme'
 import api from '../lib/api'
 import { signOut, useSession } from '../lib/auth'
-import { NAV_ITEMS, navItemsFor } from '../lib/nav'
+import { navItemsFor } from '../lib/nav'
+import SeaStateAlerts from './SeaStateAlerts'
 import { cx } from './ui'
 
 function BackendStatus() {
@@ -88,13 +89,23 @@ function HeaderAccount() {
   )
 }
 
+const NAV_LINK = (isActive) =>
+  cx(
+    'relative flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
+    isActive
+      ? 'text-primary-500'
+      : 'text-faint hover:text-[rgb(var(--text-primary))]',
+  )
+
 export default function AppShell({ children }) {
   const [theme, toggleTheme] = useTheme()
   const [mobileOpen, setMobileOpen] = useState(false)
   const location = useLocation()
   const { session } = useSession()
 
-  const items = navItemsFor(session?.role)
+  // The whole session, not just the role: the nav now also filters on the
+  // modules this individual was granted.
+  const items = navItemsFor(session)
 
   useEffect(() => {
     document.body.style.overflow = mobileOpen ? 'hidden' : ''
@@ -168,6 +179,10 @@ export default function AppShell({ children }) {
           {/* Backend health dot */}
           <BackendStatus />
 
+          {/* Sea-state warning. Renders nothing when no lane is flagged, so
+              the header stays quiet on a calm month. */}
+          <SeaStateAlerts />
+
           {/* Theme toggle */}
           <button
             type="button"
@@ -190,23 +205,21 @@ export default function AppShell({ children }) {
           style={{ borderColor: 'rgb(var(--border-subtle) / 0.5)' }}
           aria-label="Main"
         >
-          <div className="flex items-center gap-0.5 py-1">
+          <div className="flex items-center gap-1 py-1">
             {items.map(({ name, path, icon: Icon, end }) => (
-              <NavLink
-                key={path}
-                to={path}
-                end={end}
-                className={({ isActive }) =>
-                  cx(
-                    'flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors',
-                    isActive
-                      ? 'bg-primary-600 text-white shadow-sm'
-                      : 'text-faint hover:bg-[rgb(var(--surface-sunken))] hover:text-[rgb(var(--text-body))]',
-                  )
-                }
-              >
-                <Icon size={14} className="shrink-0" aria-hidden />
-                {name}
+              <NavLink key={path} to={path} end={end} className={({ isActive }) => NAV_LINK(isActive)}>
+                {({ isActive }) => (
+                  <>
+                    <Icon size={14} className="shrink-0" aria-hidden />
+                    {name}
+                    {isActive && (
+                      <span
+                        className="absolute inset-x-2.5 -bottom-1 h-0.5 rounded-full bg-primary-500"
+                        aria-hidden
+                      />
+                    )}
+                  </>
+                )}
               </NavLink>
             ))}
           </div>
@@ -312,9 +325,7 @@ export default function AppShell({ children }) {
       </main>
 
       {!isWide && (
-        <footer className="text-faint px-4 py-3 text-center text-xs lg:px-8">
-          QFleet · quantum-inspired multi-objective optimisation for maritime decarbonisation
-        </footer>
+        <footer className="text-faint px-4 py-3 text-center text-xs lg:px-8">QFleet</footer>
       )}
     </div>
   )

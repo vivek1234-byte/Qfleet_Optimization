@@ -467,6 +467,10 @@ export default function Login() {
                   autoFocus
                   spellCheck={false}
                   autoCapitalize="characters"
+                  // Administrators are issued ADMIN-prefixed IDs and staff
+                  // EMP-prefixed ones, each numbered from 001 — see
+                  // `manage.py seed` and migration 0005, which is what put an
+                  // existing database onto that convention.
                   placeholder={isAdmin ? 'ADMIN001' : 'EMP001'}
                   value={employeeId}
                   disabled={busy}
@@ -582,123 +586,7 @@ export default function Login() {
             </form>
           </div>
 
-          {/* ---- Access summary ---- */}
-          <div className="mt-5 rounded-lg border p-4" style={{ borderColor: 'rgb(var(--border-subtle))' }}>
-            <p className="text-faint mb-2 text-xs font-semibold uppercase tracking-wide">
-              {isAdmin ? 'Administrator access includes' : 'Employee access includes'}
-            </p>
-            <ul className="text-body grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              {/* Shared operational pages — both roles */}
-              <li className="flex items-center gap-1.5">
-                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
-                Dashboard
-              </li>
-              <li className="flex items-center gap-1.5">
-                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
-                Live simulator
-              </li>
-              <li className="flex items-center gap-1.5">
-                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
-                Fleet optimiser
-              </li>
-              <li className="flex items-center gap-1.5">
-                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
-                Compliance
-              </li>
-              <li className="flex items-center gap-1.5">
-                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
-                Fuel prediction
-              </li>
-              <li className="flex items-center gap-1.5">
-                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
-                Fleet &amp; lanes
-              </li>
-              {/* Admin-only pages */}
-              {isAdmin && (
-                <>
-                  <li className="flex items-center gap-1.5">
-                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
-                    <span className="font-medium">What-if sandbox</span>
-                  </li>
-                  <li className="flex items-center gap-1.5">
-                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
-                    <span className="font-medium">Scenarios</span>
-                  </li>
-                  <li className="flex items-center gap-1.5">
-                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
-                    <span className="font-medium">Benchmarks</span>
-                  </li>
-                  <li className="flex items-center gap-1.5">
-                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
-                    <span className="font-medium">Employee management</span>
-                  </li>
-                  <li className="flex items-center gap-1.5">
-                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
-                    <span className="font-medium">Audit log</span>
-                  </li>
-                </>
-              )}
-            </ul>
-            {isAdmin && (
-              <p className="text-faint mt-2.5 text-[0.68rem] leading-relaxed">
-                <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500 align-middle mr-1" />
-                Violet items are admin-exclusive. Administrators can view all employee details
-                (ID, name, department, designation, email, role, status) but{' '}
-                <strong>passwords are never visible</strong> — they are stored as bcrypt hashes
-                and can only be reset, never read.
-              </p>
-            )}
-          </div>
-
-          {/* ---- Demo credentials hint ---- */}
-          <div
-            className={cx(
-              'mt-4 rounded-lg border p-3',
-              isAdmin
-                ? 'border-violet-300 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/30'
-                : 'border-primary-300 bg-primary-50 dark:border-primary-800 dark:bg-primary-950/30',
-            )}
-          >
-            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-faint">
-              Demo credentials
-            </p>
-            {isAdmin ? (
-              <div className="space-y-1 text-xs">
-                <p className="text-body">
-                  <span className="font-medium">ID:</span>{' '}
-                  <code className="rounded bg-violet-100 px-1.5 py-0.5 font-mono text-violet-800 dark:bg-violet-900/50 dark:text-violet-300">
-                    ADMIN001
-                  </code>
-                </p>
-                <p className="text-body">
-                  <span className="font-medium">Password:</span>{' '}
-                  <code className="rounded bg-violet-100 px-1.5 py-0.5 font-mono text-violet-800 dark:bg-violet-900/50 dark:text-violet-300">
-                    Admin@12345
-                  </code>
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-1 text-xs">
-                <p className="text-body">
-                  <span className="font-medium">ID:</span>{' '}
-                  <code className="rounded bg-primary-100 px-1.5 py-0.5 font-mono text-primary-800 dark:bg-primary-900/50 dark:text-primary-300">
-                    EMP001
-                  </code>
-                </p>
-                <p className="text-body">
-                  <span className="font-medium">Password:</span>{' '}
-                  <code className="rounded bg-primary-100 px-1.5 py-0.5 font-mono text-primary-800 dark:bg-primary-900/50 dark:text-primary-300">
-                    Fleet@12345
-                  </code>
-                </p>
-              </div>
-            )}
-          </div>
-
-          <p
-            className="text-faint mt-6 border-t pt-5 text-xs leading-relaxed"
-            style={{ borderColor: 'rgb(var(--border-subtle))' }}
-          >
+          <p className="text-faint mt-6 text-xs leading-relaxed">
             Accounts are issued by your fleet administrator. Sign-in is checked against the
             account server; passwords are stored only as bcrypt hashes, and the session on this
             device expires after 12 hours.

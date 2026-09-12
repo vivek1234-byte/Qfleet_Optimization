@@ -73,6 +73,16 @@ class Employee(Base):
     # Optional: an operator may not issue addresses to every rank on board.
     email: Mapped[str | None] = mapped_column(String(254), nullable=True)
 
+    # Which operational screens this person may open, as a comma-separated
+    # list of module keys (see ``auth.permissions``). Empty means "the role
+    # default", NOT "nothing" — every row that existed before this column was
+    # added reads as empty, and treating that as no-access would have locked
+    # out the whole workforce on migration. Ignored for administrators, who
+    # always hold the full catalogue.
+    permissions: Mapped[str] = mapped_column(
+        String(512), nullable=False, default="", server_default=""
+    )
+
     # Stamped on each successful sign-in. Nullable because a freshly created
     # account has never signed in — the UI shows "Never" rather than a fake date.
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

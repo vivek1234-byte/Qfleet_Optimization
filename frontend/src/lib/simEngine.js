@@ -174,6 +174,14 @@ function initialVessel(ship) {
     dwellHoursTotal: 0,
     arrivedAt: null,
     departsAt: null,
+    // Running totals since the clock started, added to as the vessel moves.
+    // These used to be derived from how far along the *current leg* the
+    // vessel was, which meant every arrival reset them to zero and the fleet
+    // figures sawtoothed as ships turned round at different times. Burn is
+    // spent, not a position, so it accumulates.
+    fuelTons: 0,
+    co2Tons: 0,
+    costUsd: 0,
   }
 }
 
@@ -257,6 +265,24 @@ function stepVessel(v, ship, decisions, dt, stepStart, nowHours, events) {
   v.sailingHours += dt
   const travelled = knots * dt
   v.sailedNm = v.inbound ? v.sailedNm - travelled : v.sailedNm + travelled
+
+  // Bank what this step cost, at the speed actually sailed during it.
+  //
+  // Two bugs die here. Deriving the total from leg progress reset it on every
+  // turnaround; and multiplying the whole accumulated voyage by the *current*
+  // speed factor re-priced fuel already burnt whenever the user moved the
+  // speed dial, so a nudge at hour 80 changed what hour 3 had cost. Charging
+  // each step as it happens leaves the past alone and only ever adds.
+  //
+  // Power goes as v³ and time as 1/v, so fuel per mile goes as v² — the same
+  // law `estimateVoyage` and the backend's `fleet_problem` use.
+  if (travelled > 0 && ship.distanceNm > 0) {
+    const ratio = ship.speedKnots > 0 ? knots / ship.speedKnots : 1
+    const share = (travelled / ship.distanceNm) * ratio * ratio
+    v.fuelTons += (ship.fuelTons ?? 0) * share
+    v.co2Tons += (ship.co2Tons ?? 0) * share
+    v.costUsd += (ship.costUsd ?? 0) * share
+  }
 
   // Epsilon, because `sailedNm` is six hundred accumulated additions and
   // lands on 599.9999999999 as readily as on 600. A vessel a millimetre off
@@ -358,32 +384,95 @@ export function simulateTo(ships, decisions, targetHours, from = null) {
 /* Readouts                                                                    */
 /* -------------------------------------------------------------------------- */
 /**
- * Fuel and CO₂ for one vessel at its current progress.
+ * What one vessel has spent, and how far along its current leg it is.
  *
- * The plan's totals are for the whole voyage at the planned speed. Sailing
- * slower or faster changes burn by the cubic speed–power law — the same
- * relationship `estimateVoyage` and the backend's `fleet_problem` use — so a
- * speed the user dialled in moves fuel by real physics, not a linear fudge.
+ * `fraction` is a position — where the ship is on this leg, 0 to 1 — and
+ * resets each time it turns round, which is what the progress bar wants.
+ * Fuel, CO₂ and cost are not positions: they are banked step by step in
+ * `stepVessel` and only ever grow. Reading them off `fraction`, as this used
+ * to, made every arrival look like the fleet had un-burnt its fuel.
  */
-export function vesselBurn(ship, v, decisions, hours) {
+export function vesselBurn(ship, v) {
   const sailedNm = v.inbound ? ship.distanceNm - v.sailedNm : v.sailedNm
   const fraction = ship.distanceNm > 0 ? Math.min(sailedNm / ship.distanceNm, 1) : 0
-  const commanded = speedAt(decisions, ship, hours)
-  const ratio = ship.speedKnots > 0 ? commanded / ship.speedKnots : 1
-  // Power goes as v³ and time as 1/v, so fuel per mile goes as v².
-  const perMile = ratio * ratio
   return {
     fraction,
-    fuelTons: ship.fuelTons * fraction * perMile,
-    co2Tons: ship.co2Tons * fraction * perMile,
-    costUsd: ship.costUsd * fraction * perMile,
+    fuelTons: v.fuelTons ?? 0,
+    co2Tons: v.co2Tons ?? 0,
+    costUsd: v.costUsd ?? 0,
   }
+}
+
+/**
+ * What one voyage on this lane costs and emits — a pure function of the
+ * inputs, never of the clock.
+ *
+ * `x = calculate(currentData)`: the plan's own figures for this assignment
+ * (`fuel_tons`, `co2_tons`, `cost_usd` from the optimiser, or `estimateVoyage`
+ * for an un-optimised vessel) re-priced for the speed the operator has
+ * ordered, using the same v² fuel-per-mile law as `stepVessel`,
+ * `estimateVoyage` and the backend's `_voyage_terms`. Nothing is accumulated
+ * and nothing is read from the vessel's running state, so calling this at
+ * hour 0 and at hour 500 returns the same figures unless a genuine input —
+ * the plan, the lane, the fuel, or the ordered speed — has changed.
+ *
+ * Deliberately separate from `vesselBurn()`, which reports what has been
+ * *spent so far* and grows with simulated time by definition. Intensity
+ * comparisons and the "Voyage cost" readout want this one; "fuel burnt" and
+ * "CO₂e emitted" want the accumulator.
+ */
+export function voyagePlan(ship, commandedKnots) {
+  const plan = ship.speedKnots ?? 0
+  const ordered = commandedKnots ?? plan
+  // Power goes as v³ and time as 1/v, so per-mile burn goes as v².
+  const factor = plan > 0 && ordered > 0 ? (ordered / plan) ** 2 : 1
+  return {
+    fuelTons: (ship.fuelTons ?? 0) * factor,
+    co2Tons: (ship.co2Tons ?? 0) * factor,
+    costUsd: (ship.costUsd ?? 0) * factor,
+    speedFactor: factor,
+  }
+}
+
+/** Just the cost half of {@link voyagePlan}. */
+export function voyageCost(ship, commandedKnots) {
+  return voyagePlan(ship, commandedKnots).costUsd
+}
+
+/**
+ * Fuel, CO₂ and cost per nautical mile for a fleet, from its plan.
+ *
+ * The only fair way to compare two fleets of different sizes — the optimised
+ * plan puts twenty vessels to sea where the registry baseline sails fourteen,
+ * so totals flatter the smaller fleet and per-vessel averages flatter whoever
+ * sails shorter lanes. Tonnes per mile is what neither side can game, and it
+ * is the basis the IMO's own carbon-intensity measures use.
+ *
+ * Planned rather than simulated on purpose: a fleet's intensity is a property
+ * of the assignment, so it is known at hour zero and does not wobble with
+ * which particular vessels happen to be alongside at this minute.
+ */
+export function fleetIntensity(ships, speedFor = null) {
+  let fuel = 0
+  let co2 = 0
+  let cost = 0
+  let nm = 0
+  for (const ship of ships) {
+    const plan = voyagePlan(ship, speedFor ? speedFor(ship) : ship.speedKnots)
+    fuel += plan.fuelTons
+    co2 += plan.co2Tons
+    cost += plan.costUsd
+    nm += ship.distanceNm ?? 0
+  }
+  if (!(nm > 0)) return null
+  return { fuelPerNm: fuel / nm, co2PerNm: co2 / nm, costPerNm: cost / nm, nm }
 }
 
 /** Everything the fleet panel and the map need for one vessel. */
 export function vesselSnapshot(ship, v, decisions, hours) {
-  const burn = vesselBurn(ship, v, decisions, hours)
+  const burn = vesselBurn(ship, v)
   const knots = speedAt(decisions, ship, hours)
+  const plan = voyagePlan(ship, knots)
   const remainingNm = v.inbound ? v.sailedNm : ship.distanceNm - v.sailedNm
   const movingState = v.state === STATE.IN_TRANSIT && knots > 0
   return {
@@ -415,9 +504,15 @@ export function vesselSnapshot(ship, v, decisions, hours) {
     departsAt: v.departsAt,
     legsCompleted: v.legsCompleted,
     held: v.state === STATE.HELD,
+    // Spent so far — running totals, grow with the clock.
     fuelTons: burn.fuelTons,
     co2Tons: burn.co2Tons,
-    costUsd: burn.costUsd,
+    costBurntUsd: burn.costUsd,
+    // Planned for the whole voyage at the speed actually ordered — derived
+    // from the inputs, independent of the clock.
+    planFuelTons: plan.fuelTons,
+    planCo2Tons: plan.co2Tons,
+    voyageCostUsd: plan.costUsd,
     cii: ship.cii,
     ecaFraction: ship.ecaFraction,
   }
@@ -496,6 +591,10 @@ export const SIM_SPEEDS = [
   { id: 'q', label: '0.25 h/s', hoursPerSecond: 0.25, note: '1 real second = 15 minutes' },
   { id: 'h', label: '0.5 h/s', hoursPerSecond: 0.5, note: '1 real second = 30 minutes' },
   { id: 'x1', label: '1 h/s', hoursPerSecond: 1, note: '1 real second = 1 hour' },
+  // 1.5 h/s exists so the primary 1× / 2× / 6× pills are honest multiples of
+  // a 0.25 h/s base. Without it, "6×" would have to point at 1 h/s, which is
+  // four times the base, not six.
+  { id: 'x1_5', label: '1.5 h/s', hoursPerSecond: 1.5, note: '1 real second = 90 minutes' },
   { id: 'x2', label: '2 h/s', hoursPerSecond: 2, note: '1 real second = 2 hours' },
   { id: 'x6', label: '6 h/s', hoursPerSecond: 6, note: '1 real second = 6 hours' },
   { id: 'x12', label: '12 h/s', hoursPerSecond: 12, note: '1 real second = 12 hours' },

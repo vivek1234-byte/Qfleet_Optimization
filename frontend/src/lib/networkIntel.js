@@ -220,6 +220,10 @@ export function buildNetworkIntel({ plan, baseline, lanes = EMPTY, ports = EMPTY
       voyageDays: a.voyage_days,
       fuelTons: a.fuel_tons,
       co2Tons: a.co2_tons,
+      // The solver prices every assignment; the vessel panel compares this
+      // against the same field on the baseline assignment rather than
+      // apportioning a fleet total, so the figure is the optimiser's own.
+      costUsd: a.cost_usd ?? null,
       ecaShare: a.eca_switch_share ?? 0,
       shorePowerPct: a.shore_power_pct ?? 0,
       ciiRating: a.cii?.rating ?? null,

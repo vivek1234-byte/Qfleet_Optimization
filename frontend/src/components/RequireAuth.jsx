@@ -19,6 +19,7 @@ import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import AppShell from './AppShell'
 import { Spinner } from './ui'
 import { useSession } from '../lib/auth'
+import { canAccess } from '../lib/nav'
 
 export default function RequireAuth() {
   const { session, status } = useSession()
@@ -50,5 +51,19 @@ export default function RequireAuth() {
 export function RequireAdmin({ children }) {
   const { session } = useSession()
   if (session?.role !== 'ADMIN') return <Navigate to="/" replace />
+  return children
+}
+
+/**
+ * Gates one route on a module the administrator granted.
+ *
+ * Same standing as `RequireAdmin`: this stops the page rendering, the
+ * `require_module` dependency in `backend/main.py` stops the data arriving.
+ * Someone who types `/predict` without the grant lands on the dashboard
+ * rather than on a page of failed requests.
+ */
+export function RequireModule({ module, children }) {
+  const { session } = useSession()
+  if (!canAccess(session, module)) return <Navigate to="/" replace />
   return children
 }

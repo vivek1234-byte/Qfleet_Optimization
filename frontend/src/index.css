@@ -188,6 +188,42 @@
   .numeric {
     font-variant-numeric: tabular-nums;
   }
+
+  /* Stat number — large, tight, monospace numerals for KPI strips */
+  .stat-value {
+    @apply numeric text-2xl font-semibold tracking-tight;
+  }
+
+  .stat-label {
+    @apply text-xs font-medium uppercase tracking-wide;
+    color: rgb(var(--text-muted));
+  }
+
+  /* Animate a value counting up — JS sets --end, CSS does the rest */
+  @keyframes count-fade {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .count-in {
+    animation: count-fade 0.4s ease-out both;
+  }
+
+  /* Expandable section toggle */
+  .expand-toggle {
+    @apply flex w-full items-center justify-between gap-2 rounded-lg px-4 py-3 text-left text-sm font-medium transition-colors;
+    color: rgb(var(--text-secondary));
+  }
+  .expand-toggle:hover {
+    background-color: rgb(var(--surface-sunken));
+  }
+
+  /* Subtle glow for primary action areas */
+  .glow-primary {
+    box-shadow: 0 0 20px rgb(6 163 238 / 0.15), 0 0 40px rgb(6 163 238 / 0.05);
+  }
+  .dark .glow-primary {
+    box-shadow: 0 0 24px rgb(6 163 238 / 0.2), 0 0 48px rgb(6 163 238 / 0.08);
+  }
 }
 
 /* ---------------------------------------------------------------------------

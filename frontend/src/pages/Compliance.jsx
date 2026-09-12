@@ -1,20 +1,8 @@
-/**
- * Regulatory compliance.
- *
- * Two regimes decide whether a deployment plan is actually allowed, and both
- * change what "optimal" means:
- *
- *   - MARPOL Annex VI emission control areas cap fuel sulphur at 0.10%, so a
- *     ship on residual fuel has to switch to distillate inside one.
- *   - The IMO Carbon Intensity Indicator rates every cargo ship A to E, and D
- *     three years running or E once forces a corrective action plan.
- *
- * The arithmetic for both is published on this page rather than hidden, so a
- * reviewer can check it instead of taking the rating on trust.
- */
+/** Regulatory compliance — MARPOL ECA zones and IMO CII ratings. */
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Droplets,
   Gauge,
   Map as MapIcon,
@@ -85,24 +73,8 @@ const STATIC_LAYERS = {
 /* -------------------------------------------------------------------------- */
 /* Carbon intensity                                                            */
 /* -------------------------------------------------------------------------- */
-function CiiTab({ reference, year, setYear }) {
+function CiiTab({ reference, year, setYear, result, cii, assignments }) {
   const navigate = useNavigate()
-  const active = useActivePlan()
-  const optimise = useAsync((signal, body) => api.optimization.optimize(body, { signal }))
-
-  const result = optimise.data ?? active.result
-  const cii = result?.plan?.compliance?.cii
-  const assignments = result?.plan?.assignments ?? EMPTY
-
-  const runDemo = async () => {
-    const res = await optimise.run({
-      ...OPTIMIZER_PRESETS[1].config,
-      algorithm: 'qpso',
-      seed: 42,
-      include_plan: true,
-    })
-    if (res) setActivePlan(res, 'compliance')
-  }
 
   const distribution = useMemo(
     () =>
@@ -131,27 +103,12 @@ function CiiTab({ reference, year, setYear }) {
     [assignments],
   )
 
-  if (!result) {
-    return (
-      <Card>
-        <EmptyState
-          icon={ShieldCheck}
-          title="Rate a deployment plan"
-          description="Carbon intensity is a property of how the fleet is actually sailed, so there is nothing to rate until a plan exists. This runs the standard preset and rates every vessel in it."
-          action={
-            <Button icon={Sparkles} loading={optimise.loading} onClick={runDemo}>
-              Optimise and rate
-            </Button>
-          }
-        />
-      </Card>
-    )
-  }
+  // The empty state and the "optimise and rate" action live on the page itself;
+  // this panel only has anything to show once a plan has been rated.
+  if (!result) return null
 
   return (
     <div className="space-y-5">
-      {optimise.error && <ErrorState error={optimise.error} onRetry={runDemo} />}
-
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
           label="At C or better"
@@ -186,7 +143,7 @@ function CiiTab({ reference, year, setYear }) {
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <Card
           title="Every vessel against its own requirement"
-          description="Ratio of attained to required carbon intensity. One is the line; under it is compliant. Ships of different types and sizes can share this axis precisely because it is a ratio."
+          description="Attained / required CII — under 1.0 is compliant."
         >
           {scatter.length ? (
             <ChartFrame height={Math.max(220, scatter.length * 26)}>
@@ -293,71 +250,71 @@ function CiiTab({ reference, year, setYear }) {
       {cii?.at_risk?.length > 0 && (
         <Alert tone="warning" title={`${cii.at_risk.length} vessels rated D or E on this plan`}>
           <p className="mt-1">
-            {cii.at_risk.map((v) => v.vessel_name).join(', ')}. Slowing these ships or moving them
-            to a cleaner fuel is the cheapest lever; the sandbox lets you try both and watch the
-            ratings move.
+            {cii.at_risk.map((v) => v.vessel_name).join(', ')}. Try adjusting speed or fuel in the
+            sandbox to improve ratings.
           </p>
           <Button size="sm" variant="secondary" className="mt-3" onClick={() => navigate('/sandbox')}>
             Open the sandbox
           </Button>
         </Alert>
       )}
-
-      <Card title="Rated vessels" description="Attained against required, per vessel">
-        <DataTable
-          columns={[
-            { key: 'vessel_name', header: 'Vessel' },
-            { key: 'vessel_type', header: 'Class' },
-            { key: 'route_name', header: 'Lane' },
-            {
-              key: 'attained',
-              header: 'Attained',
-              align: 'right',
-              render: (row) => (row.cii?.rated ? num(row.cii.attained_cii, 2) : '—'),
-            },
-            {
-              key: 'required',
-              header: 'Required',
-              align: 'right',
-              render: (row) => (row.cii?.rated ? num(row.cii.required_cii, 2) : '—'),
-            },
-            {
-              key: 'ratio',
-              header: 'Ratio',
-              align: 'right',
-              render: (row) => (row.cii?.rated ? `${num(row.cii.ratio, 3)}×` : '—'),
-            },
-            {
-              key: 'rating',
-              header: 'Rating',
-              render: (row) =>
-                row.cii?.rated ? (
-                  <Badge tone={ciiTone(row.cii.rating)}>{row.cii.rating}</Badge>
-                ) : (
-                  '—'
-                ),
-            },
-            {
-              key: 'speed_knots',
-              header: 'Speed',
-              align: 'right',
-              render: (row) => `${num(row.speed_knots, 1)} kn`,
-            },
-            { key: 'fuel_type', header: 'Fuel' },
-          ]}
-          rows={assignments}
-          getRowKey={(row) => `${row.vessel_id}-${row.route_id}`}
-          highlightRow={(row) => row.cii?.rating === 'D' || row.cii?.rating === 'E'}
-        />
-        {cii?.caveats?.length > 0 && (
-          <ul className="text-faint mt-4 list-inside list-disc space-y-1 text-xs">
-            {cii.caveats.map((caveat) => (
-              <li key={caveat}>{caveat}</li>
-            ))}
-          </ul>
-        )}
-      </Card>
     </div>
+  )
+}
+
+/** The full rated-vessel table, revealed by "View all vessels". */
+function RatedVessels({ assignments, cii }) {
+  return (
+    <>
+      <DataTable
+        columns={[
+          { key: 'vessel_name', header: 'Vessel' },
+          { key: 'vessel_type', header: 'Class' },
+          { key: 'route_name', header: 'Lane' },
+          {
+            key: 'attained',
+            header: 'Attained',
+            align: 'right',
+            render: (row) => (row.cii?.rated ? num(row.cii.attained_cii, 2) : '—'),
+          },
+          {
+            key: 'required',
+            header: 'Required',
+            align: 'right',
+            render: (row) => (row.cii?.rated ? num(row.cii.required_cii, 2) : '—'),
+          },
+          {
+            key: 'ratio',
+            header: 'Ratio',
+            align: 'right',
+            render: (row) => (row.cii?.rated ? `${num(row.cii.ratio, 3)}×` : '—'),
+          },
+          {
+            key: 'rating',
+            header: 'Rating',
+            render: (row) =>
+              row.cii?.rated ? <Badge tone={ciiTone(row.cii.rating)}>{row.cii.rating}</Badge> : '—',
+          },
+          {
+            key: 'speed_knots',
+            header: 'Speed',
+            align: 'right',
+            render: (row) => `${num(row.speed_knots, 1)} kn`,
+          },
+          { key: 'fuel_type', header: 'Fuel' },
+        ]}
+        rows={assignments}
+        getRowKey={(row) => `${row.vessel_id}-${row.route_id}`}
+        highlightRow={(row) => row.cii?.rating === 'D' || row.cii?.rating === 'E'}
+      />
+      {cii?.caveats?.length > 0 && (
+        <ul className="text-faint mt-4 list-inside list-disc space-y-1 text-xs">
+          {cii.caveats.map((caveat) => (
+            <li key={caveat}>{caveat}</li>
+          ))}
+        </ul>
+      )}
+    </>
   )
 }
 
@@ -457,11 +414,9 @@ function EcaTab({ network, eca }) {
           </p>
         )}
 
-        <Alert tone="info" className="mt-4" title="What this costs the optimiser">
-          A ship burning HFO or VLSFO has to switch to distillate inside a zone. The model prices
-          that switch on the affected share of the voyage rather than banning the fuel outright,
-          which is what operators actually do — and it means a vessel already on LNG, methanol or
-          ammonia quietly wins the European lanes without anyone hard-coding that preference.
+        <Alert tone="info" className="mt-4" title="Optimiser impact">
+          Ships on HFO/VLSFO pay a distillate-switch cost proportional to ECA exposure. Vessels
+          already on LNG, methanol, or ammonia avoid this penalty automatically.
         </Alert>
       </Card>
 
@@ -597,9 +552,8 @@ function SeasonTab({ seasonality }) {
               {lane?.basins
                 ?.map((b) => `${pct(b.share * 100, 0)} ${b.basin}`)
                 .join(', ')}
-              . Propulsion fuel carries a{' '}
-              <span className="numeric">1 + 0.02·B^1.5</span> weather penalty, so a Beaufort 4.4
-              lane in July costs materially more than the same lane in March.
+              . Weather penalty:{' '}
+              <span className="numeric">1 + 0.02 B^1.5</span>.
             </p>
           </>
         ) : (
@@ -776,6 +730,7 @@ function MethodTab({ reference }) {
 export default function Compliance() {
   const [tab, setTab] = useState('cii')
   const [year, setYear] = useState(2026)
+  const [showAll, setShowAll] = useState(false)
 
   const network = useNetwork()
   const eca = useFetch((signal) => api.regulatory.ecaZones({ signal }), [])
@@ -785,45 +740,160 @@ export default function Compliance() {
     [year],
   )
 
+  // Rating state lives here now: the headline counts and the at-risk list are
+  // the page, and the tabs below read the same result.
+  const active = useActivePlan()
+  const optimise = useAsync((signal, body) => api.optimization.optimize(body, { signal }))
+  const result = optimise.data ?? active.result
+  const cii = result?.plan?.compliance?.cii
+  const assignments = result?.plan?.assignments ?? EMPTY
+  // Worst ratio first, so the ship that needs the most attention reads first.
+  const atRisk = useMemo(
+    () => (cii?.at_risk ?? EMPTY).slice().sort((a, b) => b.ratio - a.ratio),
+    [cii],
+  )
+
+  const runDemo = async () => {
+    const res = await optimise.run({
+      ...OPTIMIZER_PRESETS[1].config,
+      algorithm: 'qpso',
+      seed: 42,
+      include_plan: true,
+    })
+    if (res) setActivePlan(res, 'compliance')
+  }
+
   const error = network.error || eca.error || seasonality.error || reference.error
 
   return (
     <>
-      <PageHeader
-        title="Regulatory compliance"
-        description="The two regimes that decide whether a plan is allowed, and what they cost: MARPOL Annex VI emission control areas, and the IMO carbon intensity rating every cargo ship now carries."
-      />
+      <PageHeader title="Compliance" description="Which vessels need attention." />
 
       {error && <ErrorState error={error} onRetry={network.refetch} className="mb-5" />}
+      {optimise.error && <ErrorState error={optimise.error} onRetry={runDemo} className="mb-5" />}
 
-      <div
-        className="mb-5 flex gap-1 overflow-x-auto border-b"
-        style={{ borderColor: 'rgb(var(--border-subtle))' }}
-        role="tablist"
-      >
-        {TABS.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={tab === id}
-            onClick={() => setTab(id)}
-            className={
-              tab === id
-                ? '-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 border-primary-600 px-4 py-2.5 text-sm font-medium text-primary-700 dark:text-primary-300'
-                : 'text-faint -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-4 py-2.5 text-sm font-medium transition-colors hover:text-[rgb(var(--text-primary))]'
+      {!result ? (
+        <Card className="mb-6">
+          <EmptyState
+            icon={ShieldCheck}
+            title="Rate a deployment plan"
+            description="Run a deployment plan to see CII ratings for every vessel."
+            action={
+              <Button icon={Sparkles} loading={optimise.loading} onClick={runDemo}>
+                Optimise and rate
+              </Button>
             }
-          >
-            <Icon size={15} aria-hidden />
-            {label}
-          </button>
-        ))}
-      </div>
+          />
+        </Card>
+      ) : (
+        <div className="mb-8">
+          <div className="flex flex-wrap items-center gap-x-8 gap-y-2 text-sm">
+            <span className="inline-flex items-center gap-2 text-eco-600 dark:text-eco-400">
+              <CheckCircle2 size={16} aria-hidden />
+              <span className="numeric font-semibold">{cii?.compliant_count ?? 0}</span> vessels
+              compliant
+            </span>
+            <span className="inline-flex items-center gap-2 text-amber-600 dark:text-amber-400">
+              <AlertTriangle size={16} aria-hidden />
+              <span className="numeric font-semibold">{atRisk.length}</span> need attention
+            </span>
+          </div>
 
-      {tab === 'cii' && <CiiTab reference={reference.data} year={year} setYear={setYear} />}
-      {tab === 'eca' && <EcaTab network={network} eca={eca.data} />}
-      {tab === 'season' && <SeasonTab seasonality={seasonality.data} />}
-      {tab === 'method' && <MethodTab reference={reference.data} />}
+          {atRisk.length > 0 && (
+            <ul className="mt-5">
+              {atRisk.map((vessel) => (
+                <li
+                  key={vessel.vessel_name}
+                  className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 border-b py-3 last:border-b-0"
+                  style={{ borderColor: 'rgb(var(--border-subtle))' }}
+                >
+                  <span className="truncate font-medium">{vessel.vessel_name}</span>
+                  <span className="flex items-center gap-6">
+                    <Badge tone={vessel.rating === 'E' ? 'danger' : 'warning'}>
+                      CII {vessel.rating}
+                    </Badge>
+                    <span
+                      className={cx(
+                        'text-sm font-medium',
+                        vessel.rating === 'E'
+                          ? 'text-rose-600 dark:text-rose-400'
+                          : 'text-amber-600 dark:text-amber-400',
+                      )}
+                    >
+                      {vessel.rating === 'E' ? 'Action required' : 'Monitor'}
+                    </span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setShowAll((open) => !open)}
+            aria-expanded={showAll}
+            className="mt-4 text-sm font-medium text-primary-600 transition-colors hover:text-primary-700 dark:text-primary-400 dark:hover:text-primary-300"
+          >
+            {showAll ? 'Hide all vessels' : 'View all vessels'}
+          </button>
+
+          {showAll && (
+            <div className="mt-4">
+              <RatedVessels assignments={assignments} cii={cii} />
+            </div>
+          )}
+        </div>
+      )}
+
+      <details className="group">
+        <summary className="expand-toggle cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+          Technical details
+          <ChevronDown
+            size={14}
+            className="text-faint transition-transform group-open:rotate-180"
+            aria-hidden
+          />
+        </summary>
+        <div className="pt-4">
+          <div
+            className="mb-5 flex gap-1 overflow-x-auto border-b"
+            style={{ borderColor: 'rgb(var(--border-subtle))' }}
+            role="tablist"
+          >
+            {TABS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={tab === id}
+                onClick={() => setTab(id)}
+                className={
+                  tab === id
+                    ? '-mb-px flex items-center gap-2 whitespace-nowrap border-b-2 border-primary-600 px-4 py-2.5 text-sm font-medium text-primary-700 dark:text-primary-300'
+                    : 'text-faint -mb-px flex items-center gap-2 whitespace-nowrap border-b-2 border-transparent px-4 py-2.5 text-sm font-medium transition-colors hover:text-[rgb(var(--text-primary))]'
+                }
+              >
+                <Icon size={15} aria-hidden />
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {tab === 'cii' && (
+            <CiiTab
+              reference={reference.data}
+              year={year}
+              setYear={setYear}
+              result={result}
+              cii={cii}
+              assignments={assignments}
+            />
+          )}
+          {tab === 'eca' && <EcaTab network={network} eca={eca.data} />}
+          {tab === 'season' && <SeasonTab seasonality={seasonality.data} />}
+          {tab === 'method' && <MethodTab reference={reference.data} />}
+        </div>
+      </details>
     </>
   )
 }

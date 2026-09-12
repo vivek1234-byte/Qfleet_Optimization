@@ -166,8 +166,12 @@ export function formatDuration(hours) {
   if (!Number.isFinite(hours) || hours < 0) return '—'
   if (hours < 1) return `${Math.round(hours * 60)} min`
   if (hours < 48) return `${hours.toFixed(1)} h`
-  const days = Math.floor(hours / 24)
-  return `${days} d ${Math.round(hours - days * 24)} h`
+  // Round to the hour *first*, then split. Splitting first and rounding the
+  // remainder lets 71.8 h print as "2 d 24 h" — the remainder rounds up to a
+  // full day and nothing carries it.
+  const whole = Math.round(hours)
+  const days = Math.floor(whole / 24)
+  return `${days} d ${whole - days * 24} h`
 }
 
 /** Clock speed presets, in simulated hours per real second. */

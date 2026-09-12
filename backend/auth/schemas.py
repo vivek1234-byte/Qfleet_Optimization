@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from config import settings
 from db.models import Employee, Role, normalise_employee_id
 
+from .permissions import allowed_modules, normalise as normalise_modules
 from .security import password_problem
 
 # Letters, digits, dash, underscore. Deliberately permissive about the shape
@@ -109,6 +110,17 @@ class EmployeeOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # The screens this person may open, already resolved: an administrator's
+    # full catalogue, an employee's explicit grant, or the default set when
+    # nobody has configured them. The client never has to reproduce that
+    # fallback rule, so it cannot drift from the server's.
+    permissions: List[str] = Field(default_factory=list)
+
+    # True when the list above came from an explicit administrator decision
+    # rather than the default. The Employees page needs the difference to
+    # show "Default access" instead of implying someone chose it.
+    permissions_customised: bool = False
+
     @classmethod
     def from_model(cls, employee: Employee) -> "EmployeeOut":
         return cls(
@@ -123,6 +135,8 @@ class EmployeeOut(BaseModel):
             last_login=employee.last_login,
             created_at=employee.created_at,
             updated_at=employee.updated_at,
+            permissions=allowed_modules(employee),
+            permissions_customised=bool((employee.permissions or "").strip()),
         )
 
 
@@ -177,6 +191,23 @@ class EmployeeCreate(BaseModel):
     email: Optional[str] = None
     password: str
     is_active: bool = True
+
+    # Omitted means "the role default". An explicit empty list is not a way
+    # to grant nothing — use ["dashboard"] for that — because an accidental
+    # [] from a form that failed to populate would create an account that
+    # cannot open anything.
+    permissions: Optional[List[str]] = None
+
+    @field_validator("permissions")
+    @classmethod
+    def _clean_permissions(cls, value):
+        """Reject unknown module keys here rather than storing junk."""
+        if value is None:
+            return None
+        try:
+            return normalise_modules(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("employee_id")
     @classmethod
@@ -244,6 +275,21 @@ class EmployeeUpdate(BaseModel):
     role: Optional[str] = None
     email: Optional[str] = None
     is_active: Optional[bool] = None
+
+    # Send a list to set it, or [] to clear the override and fall back to the
+    # role default. Omit the field entirely to leave it untouched.
+    permissions: Optional[List[str]] = None
+
+    @field_validator("permissions")
+    @classmethod
+    def _clean_permissions(cls, value):
+        """Reject unknown module keys here rather than storing junk."""
+        if value is None:
+            return None
+        try:
+            return normalise_modules(value)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("full_name")
     @classmethod

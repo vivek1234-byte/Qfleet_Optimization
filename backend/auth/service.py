@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from core.errors import ConflictError, NotFoundError, ValidationError
 from db.models import AuditLog, Employee, Role, normalise_employee_id
 
+from .permissions import encode as encode_modules
 from .security import hash_password
 
 
@@ -95,6 +96,7 @@ def create_employee(
     designation: str = "",
     email: Optional[str] = None,
     is_active: bool = True,
+    permissions: Optional[list[str]] = None,
 ) -> Employee:
     normalised = normalise_employee_id(employee_id)
 
@@ -115,6 +117,8 @@ def create_employee(
         designation=designation or "",
         email=email,
         is_active=is_active,
+        # Empty string = "role default". See auth.permissions.
+        permissions=encode_modules(permissions) if permissions else "",
     )
     db.add(employee)
     try:
@@ -158,6 +162,12 @@ def update_employee(db: Session, employee: Employee, changes: dict) -> Employee:
     # `email` is the one field that can legitimately be cleared.
     if "email" in changes and changes["email"] is None:
         employee.email = None
+
+    # Module access. An empty list is meaningful here in a way it is not on
+    # create: it clears the override and returns the person to the role
+    # default, which is how an administrator undoes a restriction.
+    if "permissions" in changes and changes["permissions"] is not None:
+        employee.permissions = encode_modules(changes["permissions"])
 
     db.commit()
     db.refresh(employee)

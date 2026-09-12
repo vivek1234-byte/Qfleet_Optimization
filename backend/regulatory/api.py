@@ -22,7 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import Depends, APIRouter, Query
+from auth.permissions import reference_data, require_module
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:
@@ -46,6 +47,7 @@ try:
         sea_routes_summary,
     )
     from ..data.seasonality import basin_reference, monthly_profile
+    from ..data.sea_state import build_alerts
     from ..data.fleet_registry import LANES
 except ImportError:  # pragma: no cover
     from core.errors import ValidationError
@@ -68,6 +70,7 @@ except ImportError:  # pragma: no cover
         sea_routes_summary,
     )
     from data.seasonality import basin_reference, monthly_profile
+    from data.sea_state import build_alerts
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +113,7 @@ class RatingRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-@router.get("/eca-zones")
+@router.get("/eca-zones", dependencies=[Depends(reference_data())])
 def get_eca_zones() -> Dict[str, Any]:
     """
     Emission control area outlines, and how much of each lane runs inside one.
@@ -136,7 +139,7 @@ def get_eca_zones() -> Dict[str, Any]:
     }
 
 
-@router.get("/routes")
+@router.get("/routes", dependencies=[Depends(reference_data())])
 def get_routes() -> Dict[str, Any]:
     """
     Sea-route geometry: ports, chokepoints and the waypoint path of each lane.
@@ -148,7 +151,7 @@ def get_routes() -> Dict[str, Any]:
     return sea_routes_summary()
 
 
-@router.get("/cii-reference")
+@router.get("/cii-reference", dependencies=[Depends(reference_data())])
 def get_cii_reference(
     year: int = Query(2026, ge=MIN_YEAR, le=MAX_YEAR),
 ) -> Dict[str, Any]:
@@ -179,7 +182,7 @@ def get_cii_reference(
     return table
 
 
-@router.post("/cii")
+@router.post("/cii", dependencies=[Depends(require_module('compliance'))])
 def rate_voyages(request: RatingRequest) -> Dict[str, Any]:
     """
     Rate a set of voyages A-E against the IMO carbon intensity requirement.
@@ -197,7 +200,7 @@ def rate_voyages(request: RatingRequest) -> Dict[str, Any]:
         raise ValidationError(str(exc)) from exc
 
 
-@router.get("/seasonality")
+@router.get("/seasonality", dependencies=[Depends(reference_data())])
 def get_seasonality(lane: Optional[str] = Query(None, max_length=120)) -> Dict[str, Any]:
     """
     Monthly weather multipliers by sea basin, and per lane when one is named.
@@ -220,3 +223,35 @@ def get_seasonality(lane: Optional[str] = Query(None, max_length=120)) -> Dict[s
     if lane is not None and not payload["lanes"]:
         raise ValidationError(f"Unknown lane '{lane}'.")
     return payload
+
+
+@router.get("/alerts", dependencies=[Depends(reference_data())])
+def get_sea_state_alerts(
+    month: Optional[int] = Query(None, ge=1, le=12, description="1-12. Defaults to now."),
+    live: bool = Query(True, description="Query the marine forecast. False forces climatology."),
+) -> Dict[str, Any]:
+    """
+    Lanes whose sea state warrants a warning, worst first.
+
+    Three severities: `severe` at gale force and above, `rough` at near gale,
+    and `unseasonal` for a lane that is not rough in absolute terms but is
+    well above what it normally does this month — the case a planner misses,
+    because the lane's annual mean looks perfectly fine.
+
+    Reference data: any signed-in user, because the warning dot belongs in the
+    header on every screen, not only for whoever holds Compliance.
+
+    Figures come from a live marine forecast where one is reachable and from
+    the bundled climatology where it is not — per lane, not all-or-nothing.
+    Every alert carries its own `source`, and `live.mode` says whether the set
+    as a whole is `observed`, `mixed` or `climatology`. A conference Wi-Fi
+    failure degrades the numbers, never the page.
+
+    Tides are absent on purpose. The response says so in `not_modelled` rather
+    than quietly omitting them, because a caller asking for weather warnings
+    deserves to know which hazards this can and cannot see.
+    """
+    # A month other than the current one is a planning question, and no feed
+    # forecasts July from September — so an outlook is always climatology.
+    use_live = live and month is None
+    return build_alerts(LANES, month, live=use_live)

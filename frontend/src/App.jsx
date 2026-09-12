@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
-import RequireAuth, { RequireAdmin } from './components/RequireAuth'
+import RequireAuth, { RequireAdmin, RequireModule } from './components/RequireAuth'
 import Admin from './pages/Admin'
 import Benchmarks from './pages/Benchmarks'
 import Compliance from './pages/Compliance'
@@ -47,13 +47,33 @@ export default function App() {
         {/* Everything below the gate shares one AppShell, so the sidebar and
             header are mounted once rather than per page. */}
         <Route element={<RequireAuth />}>
+          {/* `module` is the key an administrator ticks on the Employees
+              page, and the same key `backend/main.py` guards the matching
+              router with. The dashboard is deliberately ungated: it is where
+              a blocked route redirects to, so gating it could bounce someone
+              between two routes forever. */}
           <Route path="/" element={<Dashboard />} />
-          <Route path="/simulator" element={<Simulator />} />
+          <Route
+            path="/simulator"
+            element={<RequireModule module="simulator"><Simulator /></RequireModule>}
+          />
           <Route path="/sandbox" element={<RequireAdmin><Sandbox /></RequireAdmin>} />
-          <Route path="/optimize" element={<Optimizer />} />
-          <Route path="/predict" element={<Prediction />} />
-          <Route path="/fleet" element={<Fleet />} />
-          <Route path="/compliance" element={<Compliance />} />
+          <Route
+            path="/optimize"
+            element={<RequireModule module="optimize"><Optimizer /></RequireModule>}
+          />
+          <Route
+            path="/predict"
+            element={<RequireModule module="predict"><Prediction /></RequireModule>}
+          />
+          <Route
+            path="/fleet"
+            element={<RequireModule module="fleet"><Fleet /></RequireModule>}
+          />
+          <Route
+            path="/compliance"
+            element={<RequireModule module="compliance"><Compliance /></RequireModule>}
+          />
           <Route path="/scenarios" element={<RequireAdmin><Scenarios /></RequireAdmin>} />
           <Route path="/benchmarks" element={<RequireAdmin><Benchmarks /></RequireAdmin>} />
           {/* Administrators only. `RequireAdmin` sits inside the group so the

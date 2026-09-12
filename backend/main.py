@@ -29,7 +29,7 @@ from typing import Any, Dict
 # `uvicorn backend.main:app` from the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -275,11 +275,30 @@ from prediction.api import router as prediction_router  # noqa: E402
 from regulatory.api import router as regulatory_router  # noqa: E402
 from scenario.api import router as scenario_router  # noqa: E402
 
+from auth.permissions import require_module  # noqa: E402
+
 app.include_router(auth_router)
 app.include_router(admin_router)
+
+# Per-employee module access. Hiding a link in the navigation is
+# presentation; these guards are the boundary — an employee without
+# Benchmarks gets a 403 from curl too.
+#
+# Guarding a whole router was the first attempt and it was wrong. Screens
+# share endpoints: the digital twin reads the fuel catalogue that nominally
+# belongs to Scenarios, and every page with a map reads ECA geometry that
+# nominally belongs to Compliance. Gating those by the router that happens to
+# own them locked people out of screens they had been granted. So the
+# catalogue and geometry routes carry `reference_data` — a session, no
+# particular module — and the routes that *are* a feature carry
+# `require_module` naming every screen that legitimately calls them. See each
+# router's decorators; `/benchmarks` is the one place where the whole router
+# is the feature.
 app.include_router(optimization_router)
-app.include_router(benchmarking_router)
-app.include_router(prediction_router)
+app.include_router(
+    benchmarking_router, dependencies=[Depends(require_module("benchmarks"))]
+)
+app.include_router(prediction_router, dependencies=[Depends(require_module("predict"))])
 app.include_router(scenario_router)
 app.include_router(regulatory_router)
 

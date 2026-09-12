@@ -1,11 +1,4 @@
-/**
- * Fleet and lane registry.
- *
- * A reviewer's first instinct is to check whether the data is real. This page
- * exists to answer that: named Indian-flag vessels with plausible particulars,
- * and sixteen trade lanes with UN/LOCODEs and sea distances that match
- * published port-to-port tables.
- */
+/** Fleet and lane registry — vessel particulars, trade lanes, and route map. */
 import { Anchor, Filter, Route, Ship } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
@@ -126,7 +119,7 @@ export default function Fleet() {
     <>
       <PageHeader
         title="Fleet & lanes"
-        description="The vessels and trade lanes every optimisation runs against. Vessel names are fictional; the ports, UN/LOCODEs, distances and routings are not."
+        description="Vessels and trade lanes used across all optimisation runs."
       />
 
       <div className="mb-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

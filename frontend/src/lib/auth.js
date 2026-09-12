@@ -115,6 +115,11 @@ function toSession({ access_token, expires_at, employee }, remember) {
     role: employee.role,
     department: employee.department,
     email: employee.email,
+    // Which modules this person may open, resolved by the server (an
+    // administrator's full catalogue, an explicit grant, or the default set).
+    // The client never recomputes that rule, so the navigation and the API
+    // cannot disagree about who may see what.
+    permissions: employee.permissions ?? [],
   }
 }
 

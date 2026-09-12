@@ -1,22 +1,5 @@
-/**
- * Fuel-consumption prediction.
- *
- * The single predict call is the headline, but the two derived views matter
- * more in a demo: sweeping speed shows the model has learnt the cubic
- * speed-power law rather than memorising the training set, and sweeping fuel
- * shows what switching costs on the same voyage.
- */
-import {
-  Activity,
-  Coins,
-  Cpu,
-  Droplets,
-  Gauge,
-  Leaf,
-  RefreshCw,
-  Sparkles,
-  Target,
-} from 'lucide-react'
+/** Fuel-consumption prediction with speed and fuel sweeps. */
+import { ChevronDown, RefreshCw, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, Cell, ReferenceLine } from 'recharts'
 
@@ -39,8 +22,6 @@ import {
   PageHeader,
   Select,
   Skeleton,
-  StatCard,
-  cx,
 } from '../components/ui'
 import { useAsync, useFetch } from '../hooks/useApi'
 import api from '../lib/api'
@@ -54,6 +35,10 @@ const SPEED_STEPS = 13
 const DEFAULT_VESSEL_TYPES = ['Container', 'Bulk Carrier', 'Tanker']
 const DEFAULT_FUEL_TYPES = ['HFO', 'VLSFO', 'MGO', 'LNG', 'Methanol', 'Ammonia', 'Hydrogen']
 const EMPTY = []
+
+// Presets are labelled "<vessel class> · <origin> → <destination>"; the tail is
+// the route, and the class already has its own control.
+const routeLabel = (preset) => preset.label.split('·').pop().trim()
 
 export default function Prediction() {
   const modelInfo = useFetch((signal) => api.prediction.modelInfo({ signal }), [])
@@ -78,6 +63,13 @@ export default function Prediction() {
     const raw = event.target.value
     setValues((v) => ({ ...v, [key]: event.target.type === 'number' ? Number(raw) : raw }))
     setPresetId(null)
+  }
+
+  const selectRoute = (event) => {
+    const preset = PREDICTION_PRESETS.find((p) => p.id === event.target.value)
+    if (!preset) return
+    setValues(preset.values)
+    setPresetId(preset.id)
   }
 
   const fieldErrors = predict.error?.fieldMap ?? {}
@@ -157,86 +149,134 @@ export default function Prediction() {
   const maxImportance = topFeatures[0]?.importance ?? 1
 
   const result = predict.data
-  const ciWidth = result
-    ? ((result.confidence_interval[1] - result.confidence_interval[0]) /
-        Math.max(result.predicted_fuel_consumption, 1)) *
-      100
+  // Both are optional on the wire — the backend omits the interval when the
+  // model has no RMSE, and model_r2 when it has no metrics at all.
+  const interval = result?.confidence_interval
+  const confidence = result?.model_r2 ?? metrics?.r2
+  const ciWidth = interval
+    ? ((interval[1] - interval[0]) / Math.max(result.predicted_fuel_consumption, 1)) * 100
     : 0
 
   return (
     <>
-      <PageHeader
-        title="Fuel prediction"
-        description="A gradient-boosted model trained on voyage records. Give it a vessel and a voyage and it returns tonnes of bunker, with the CO₂ and bunker cost that follow."
-        actions={
+      <PageHeader title="Fuel Prediction" description="Predict voyage fuel." />
+
+      <div className="mx-auto max-w-xl">
+        <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">
+          How much fuel will this voyage need?
+        </h2>
+
+        <div className="mt-6 space-y-4">
+          <Select
+            label="Vessel"
+            value={values.vessel_type}
+            onChange={setField('vessel_type')}
+            options={vesselTypes.map((t) => ({ value: t, label: t }))}
+            error={fieldErrors.vessel_type}
+          />
+          <Select label="Route" value={presetId ?? 'custom'} onChange={selectRoute}>
+            {/* Editing any field in Technical details detaches the voyage from
+                its preset, so the select needs somewhere to point. */}
+            {!presetId && <option value="custom">Custom voyage</option>}
+            {PREDICTION_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {routeLabel(preset)}
+              </option>
+            ))}
+          </Select>
+
           <Button
-            variant="secondary"
-            icon={RefreshCw}
-            loading={train.loading}
-            onClick={() =>
-              train.run({ model_type: 'xgboost', test_size: 0.2, persist: true }).then((res) => {
-                if (res) {
-                  modelInfo.refetch()
-                  importance.refetch()
+            className="w-full"
+            icon={Sparkles}
+            loading={predict.loading || sweep.loading}
+            onClick={runAll}
+          >
+            Predict fuel
+          </Button>
+        </div>
+
+        {modelInfo.data && !modelInfo.data.trained && (
+          <Alert tone="warning" title="No trained model on disk" className="mt-5">
+            Run <code>python train_model.py --generate 20000</code> from the project root, or press
+            Retrain in Technical details.
+          </Alert>
+        )}
+        {predict.error && <ErrorState error={predict.error} onRetry={runAll} className="mt-5" />}
+
+        {predict.loading ? (
+          <Skeleton className="mt-8 h-16 w-56" />
+        ) : (
+          result && (
+            <div className="mt-8">
+              <p className="numeric text-6xl font-semibold leading-none tracking-tight">
+                {num(result.predicted_fuel_consumption, 0)}
+                <span className="text-body ml-2 text-2xl font-medium">t</span>
+              </p>
+              <dl
+                className="mt-6 divide-y text-sm"
+                style={{ borderColor: 'rgb(var(--border-subtle))' }}
+              >
+                {interval && (
+                  <div className="flex items-baseline justify-between gap-4 py-2.5">
+                    <dt className="text-faint">Expected</dt>
+                    <dd className="numeric">
+                      {num(interval[0], 0)}–{num(interval[1], 0)} t
+                    </dd>
+                  </div>
+                )}
+                {Number.isFinite(confidence) && (
+                  <div className="flex items-baseline justify-between gap-4 py-2.5">
+                    <dt className="text-faint">Confidence (R²)</dt>
+                    <dd className="numeric">{pct(confidence * 100, 2)}</dd>
+                  </div>
+                )}
+              </dl>
+            </div>
+          )
+        )}
+      </div>
+
+      <details
+        className="group mt-10 rounded-lg border"
+        style={{ borderColor: 'rgb(var(--border-subtle))' }}
+      >
+        <summary className="expand-toggle cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+          Technical details
+          <ChevronDown
+            size={14}
+            className="text-faint transition-transform group-open:rotate-180"
+            aria-hidden
+          />
+        </summary>
+        <div
+          className="space-y-5 border-t p-4"
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+        >
+          <Card
+            title="Voyage"
+            description="What are we predicting"
+            actions={
+              <Button
+                size="sm"
+                variant="secondary"
+                icon={RefreshCw}
+                loading={train.loading}
+                onClick={() =>
+                  train
+                    .run({ model_type: 'xgboost', test_size: 0.2, persist: true })
+                    .then((res) => {
+                      if (res) {
+                        modelInfo.refetch()
+                        importance.refetch()
+                      }
+                    })
                 }
-              })
+              >
+                Retrain model
+              </Button>
             }
           >
-            Retrain model
-          </Button>
-        }
-      />
-
-      {train.error && <ErrorState error={train.error} className="mb-5" />}
-      {train.data && (
-        <Alert tone="success" title="Model retrained" className="mb-5">
-          R² {num(train.data.r2, 4)} · RMSE {num(train.data.rmse, 2)} t · MAPE{' '}
-          {pct(train.data.mape, 2)} on {num(train.data.n_test)} held-out voyages, in{' '}
-          {seconds(train.data.train_time)}.
-        </Alert>
-      )}
-
-      <div className="grid gap-5 xl:grid-cols-[20rem_minmax(0,1fr)]">
-        {/* Form */}
-        <div className="xl:sticky xl:top-20 xl:self-start">
-          <Card title="Voyage" description="What are we predicting">
             <div className="space-y-4">
-              <div>
-                <p className="field-label">Preset</p>
-                <div className="space-y-1.5">
-                  {PREDICTION_PRESETS.map((preset) => (
-                    <button
-                      key={preset.id}
-                      type="button"
-                      onClick={() => {
-                        setValues(preset.values)
-                        setPresetId(preset.id)
-                      }}
-                      className={cx(
-                        'w-full rounded-lg border px-3 py-2 text-left text-xs font-medium transition-colors',
-                        presetId === preset.id
-                          ? 'border-primary-500 bg-primary-50 text-primary-700 dark:bg-primary-950/50 dark:text-primary-200'
-                          : 'hover:bg-[rgb(var(--surface-sunken))]',
-                      )}
-                      style={
-                        presetId === preset.id
-                          ? undefined
-                          : { borderColor: 'rgb(var(--border-strong))' }
-                      }
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <Select
-                label="Vessel class"
-                value={values.vessel_type}
-                onChange={setField('vessel_type')}
-                options={vesselTypes.map((t) => ({ value: t, label: t }))}
-                error={fieldErrors.vessel_type}
-              />
               <Select
                 label="Fuel"
                 value={values.fuel_type}
@@ -244,7 +284,7 @@ export default function Prediction() {
                 options={fuelTypes.map((t) => ({ value: t, label: t }))}
                 error={fieldErrors.fuel_type}
               />
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 <NumberInput
                   label="Deadweight"
                   unit="t"
@@ -313,79 +353,42 @@ export default function Prediction() {
                   className="col-span-2"
                 />
               </div>
-
-              <Button
-                className="w-full"
-                icon={Sparkles}
-                loading={predict.loading || sweep.loading}
-                onClick={runAll}
-              >
-                Predict
-              </Button>
             </div>
           </Card>
-        </div>
 
-        {/* Results */}
-        <div className="min-w-0 space-y-5">
-          {predict.error && <ErrorState error={predict.error} onRetry={runAll} />}
-          {modelInfo.data && !modelInfo.data.trained && (
-            <Alert tone="warning" title="No trained model on disk">
-              Run <code>python train_model.py --generate 20000</code> from the project root, or
-              press Retrain above.
+          {train.error && <ErrorState error={train.error} />}
+          {train.data && (
+            <Alert tone="success" title="Model retrained">
+              R² {num(train.data.r2, 4)} · RMSE {num(train.data.rmse, 2)} t · MAPE{' '}
+              {pct(train.data.mape, 2)} on {num(train.data.n_test)} held-out voyages, in{' '}
+              {seconds(train.data.train_time)}.
             </Alert>
           )}
 
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard
-              label="Predicted fuel"
-              value={result ? num(result.predicted_fuel_consumption, 1) : '—'}
-              unit="t"
-              icon={Droplets}
-              accent="primary"
-              loading={predict.loading}
-              hint={
-                result
-                  ? `95% interval ${num(result.confidence_interval[0], 0)}–${num(result.confidence_interval[1], 0)} t`
-                  : undefined
-              }
-            />
-            <StatCard
-              label="CO₂e"
-              value={result ? num(result.estimated_co2_tons, 1) : '—'}
-              unit="t"
-              icon={Leaf}
-              accent="eco"
-              loading={predict.loading}
-            />
-            <StatCard
-              label="Bunker cost"
-              value={result ? usd(result.estimated_cost_usd, { compact: true }) : '—'}
-              icon={Coins}
-              accent="amber"
-              loading={predict.loading}
-            />
-            <StatCard
-              label="Model R²"
-              value={result ? num(result.model_r2, 4) : metrics ? num(metrics.r2, 4) : '—'}
-              icon={Target}
-              accent="violet"
-              loading={predict.loading}
-              hint={metrics ? `MAPE ${pct(metrics.mape, 2)}` : undefined}
-            />
-          </div>
-
           {result && ciWidth > 45 && (
             <Alert tone="warning" title="Wide prediction interval">
-              The interval spans {pct(ciWidth, 0)} of the point estimate. That usually means the
-              inputs sit outside the training distribution — an unusual power-to-deadweight ratio,
-              or a speed far from the class norm.
+              The interval spans {pct(ciWidth, 0)} of the point estimate — inputs may sit outside
+              the training distribution.
             </Alert>
+          )}
+
+          {result && (
+            <dl className="divide-y text-sm" style={{ borderColor: 'rgb(var(--border-subtle))' }}>
+              {[
+                ['CO₂e', `${num(result.estimated_co2_tons, 1)} t`],
+                ['Bunker cost', usd(result.estimated_cost_usd, { compact: true })],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-baseline justify-between gap-4 py-2.5">
+                  <dt className="text-faint">{label}</dt>
+                  <dd className="numeric">{value}</dd>
+                </div>
+              ))}
+            </dl>
           )}
 
           <Card
             title="Speed sensitivity"
-            description="The same voyage at a range of speeds. Fuel rises roughly with the cube of speed, which is the whole economic case for slow steaming."
+            description="Fuel consumption across a range of speeds for this voyage"
           >
             {sweep.loading ? (
               <Skeleton className="h-72 w-full" />
@@ -472,7 +475,7 @@ export default function Prediction() {
           <div className="grid gap-5 lg:grid-cols-2">
             <Card
               title="Same voyage, every fuel"
-              description="Model tonnage, with the CO₂ that follows from each fuel's emission factor"
+              description="Tonnage and CO₂ by fuel type"
             >
               {fuelSweep.loading ? (
                 <Skeleton className="h-64 w-full" />
@@ -526,10 +529,8 @@ export default function Prediction() {
                       tone="eco"
                     />
                   ))}
-                  <p className="text-faint pt-1 text-xs">
-                    The engineered propulsion-energy terms dominate, which is the right answer —
-                    they encode power × time and the cubic speed law the naval architecture says
-                    should be there.
+                  <p className="text-faint pt-1 text-xs" title="Propulsion-energy terms encode power × time and the cubic speed law from naval architecture.">
+                    Engineered propulsion features dominate, as expected.
                   </p>
                 </div>
               )}
@@ -545,10 +546,10 @@ export default function Prediction() {
               <div className="grid gap-5 sm:grid-cols-2">
                 <dl className="space-y-1.5 text-sm">
                   {[
-                    ['Type', modelInfo.data?.model_type, Cpu],
-                    ['Features', modelInfo.data?.features?.length, Activity],
-                    ['Training rows', metrics && num(metrics.n_train), Gauge],
-                    ['Held out', metrics && num(metrics.n_test), Gauge],
+                    ['Type', modelInfo.data?.model_type],
+                    ['Features', modelInfo.data?.features?.length],
+                    ['Training rows', metrics && num(metrics.n_train)],
+                    ['Held out', metrics && num(metrics.n_test)],
                   ].map(([label, value]) => (
                     <div key={label} className="flex justify-between gap-3">
                       <dt className="text-faint">{label}</dt>
@@ -576,7 +577,7 @@ export default function Prediction() {
             )}
           </Card>
         </div>
-      </div>
+      </details>
     </>
   )
 }

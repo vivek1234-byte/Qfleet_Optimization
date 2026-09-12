@@ -16,7 +16,8 @@ import threading
 from functools import lru_cache
 from typing import Any, Dict, Iterator, List, Optional
 
-from fastapi import APIRouter, Query
+from fastapi import Depends, APIRouter, Query
+from auth.permissions import reference_data, require_module
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -169,13 +170,13 @@ class CompareRequest(FleetConfig):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
-@router.get("/algorithms")
+@router.get("/algorithms", dependencies=[Depends(reference_data())])
 def get_algorithms() -> List[Dict[str, Any]]:
     """The solvers this build can run, with their capabilities."""
     return list_algorithms()
 
 
-@router.get("/registry")
+@router.get("/registry", dependencies=[Depends(reference_data())])
 def get_registry() -> Dict[str, Any]:
     """
     The full vessel and trade-lane registry the problem builder draws from.
@@ -204,7 +205,7 @@ def get_registry() -> Dict[str, Any]:
     return summary
 
 
-@router.get("/fleet")
+@router.get("/fleet", dependencies=[Depends(require_module('dashboard', 'simulator', 'optimize', 'sandbox', 'fleet', 'compliance'))])
 def get_fleet(
     n_vessels: int = Query(10, ge=1, le=settings.MAX_VESSELS),
     n_routes: int = Query(5, ge=1, le=settings.MAX_ROUTES),
@@ -222,7 +223,7 @@ def get_fleet(
     return summary
 
 
-@router.post("/optimize")
+@router.post("/optimize", dependencies=[Depends(require_module('dashboard', 'simulator', 'optimize', 'sandbox', 'fleet', 'compliance'))])
 def run_optimization(request: OptimizeRequest) -> Dict[str, Any]:
     """
     Run one algorithm and return the optimised deployment plan.
@@ -253,7 +254,7 @@ def run_optimization(request: OptimizeRequest) -> Dict[str, Any]:
         raise ComputationError(f"Optimization failed: {exc}") from exc
 
 
-@router.post("/compare")
+@router.post("/compare", dependencies=[Depends(require_module('optimize', 'benchmarks'))])
 def compare_algorithms(request: CompareRequest) -> Dict[str, Any]:
     """
     Run several algorithms on the *same* problem instance and rank them.
@@ -432,7 +433,7 @@ def _stream_optimization(params: Dict[str, Any]) -> Iterator[str]:
             return
 
 
-@router.get("/stream")
+@router.get("/stream", dependencies=[Depends(require_module('sandbox', 'optimize'))])
 def stream_optimization(
     algorithm: str = Query("qpso", description=f"One of: {', '.join(ALGORITHM_IDS)}"),
     n_vessels: int = Query(10, ge=1, le=STREAM_MAX_VESSELS),

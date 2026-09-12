@@ -24,7 +24,6 @@ import {
   UserCheck,
   UserPlus,
   UserX,
-  Users,
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -40,7 +39,6 @@ import {
   PageHeader,
   Select,
   Skeleton,
-  StatCard,
   cx,
 } from '../components/ui'
 import api from '../lib/api'
@@ -48,19 +46,33 @@ import { useSession } from '../lib/auth'
 
 const EMPTY = []
 
-// What each role can reach. Derived from the role, not stored per-user — the
-// backend enforces exactly this split (employees get a 403 on /api/admin/*),
-// so the matrix is a true picture of access, not a decorative checklist.
-const ACCESS_AREAS = [
-  { key: 'dashboard', label: 'Dashboard', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'fleet', label: 'Fleet & lanes', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'simulation', label: 'Live simulation', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'optimization', label: 'Optimisation', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'compliance', label: 'Compliance', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'prediction', label: 'Fuel prediction', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'scenarios', label: 'Scenarios', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'benchmarks', label: 'Benchmarks', roles: ['ADMIN', 'EMPLOYEE'] },
-  { key: 'employees', label: 'Employee management', roles: ['ADMIN'] },
+/**
+ * Fallback module catalogue.
+ *
+ * The live one comes from `GET /api/admin/modules`, so the checkboxes always
+ * match what the server actually enforces. This copy only covers the moment
+ * before that request lands, and is deliberately the same list.
+ */
+const FALLBACK_MODULES = [
+  { key: 'dashboard', label: 'Dashboard', admin_only: false },
+  { key: 'simulator', label: 'Fleet Digital Twin', admin_only: false },
+  { key: 'optimize', label: 'Fleet Optimizer', admin_only: false },
+  { key: 'predict', label: 'Fuel Prediction', admin_only: false },
+  { key: 'compliance', label: 'Compliance', admin_only: false },
+  { key: 'fleet', label: 'Fleet & Lanes', admin_only: false },
+  { key: 'sandbox', label: 'What-if Sandbox', admin_only: true },
+  { key: 'scenarios', label: 'Scenarios', admin_only: true },
+  { key: 'benchmarks', label: 'Benchmarks', admin_only: true },
+]
+
+/** What an employee holds when nobody has configured them. Mirrors the server. */
+const DEFAULT_MODULE_KEYS = [
+  'dashboard',
+  'simulator',
+  'optimize',
+  'predict',
+  'compliance',
+  'fleet',
 ]
 
 const ROLE_OPTIONS = [
@@ -90,6 +102,10 @@ const BLANK_FORM = {
   password: '',
   confirm: '',
   is_active: true,
+  // null = "leave at the role default". A Set only appears once the
+  // administrator actually ticks something, so opening a form and saving it
+  // unchanged never silently converts a default into a frozen explicit list.
+  permissions: null,
 }
 
 /** dd MMM yyyy, without pulling in a date library for one line. */
@@ -119,6 +135,89 @@ function TextField({ label, hint, error, className, ...props }) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Module access                                                               */
+/* -------------------------------------------------------------------------- */
+/**
+ * Which screens this person may open.
+ *
+ * Three states, and the distinction between the first two matters: `value` is
+ * `null` while the account is on the role default, a Set once an
+ * administrator has actually chosen. Opening the form and saving it unchanged
+ * must not freeze today's default into an explicit list, because then a later
+ * change to the default would silently not reach that person.
+ *
+ * Administrators are shown as holding everything, with the checkboxes
+ * disabled: the role is the grant, and letting someone tick boxes that the
+ * server then ignores would be a lie in the UI.
+ */
+function ModuleAccess({ modules, role, value, onChange, disabled }) {
+  const isAdmin = role === 'ADMIN'
+  const usingDefault = value === null
+
+  const toggle = (key) => {
+    // First tick converts the default into an explicit list, starting from
+    // whatever the person can open right now — so ticking one box never
+    // quietly revokes the other eight.
+    const next = new Set(value ?? modules.filter((m) => !m.admin_only).map((m) => m.key))
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    onChange(next)
+  }
+
+  return (
+    <fieldset disabled={disabled || isAdmin} className="min-w-0">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <legend className="field-label mb-0">Module access</legend>
+        {!isAdmin && !usingDefault && (
+          <button
+            type="button"
+            onClick={() => onChange(null)}
+            className="text-xs text-primary-500 hover:underline"
+          >
+            Reset to default
+          </button>
+        )}
+      </div>
+
+      {isAdmin ? (
+        <p className="text-faint text-xs">
+          Administrators hold every module, including employee management. Access cannot be
+          restricted for an administrator — change the role to Employee first.
+        </p>
+      ) : (
+        <>
+          <div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
+            {modules
+              .filter((m) => !m.admin_only)
+              .map((m) => {
+                const checked = usingDefault
+                  ? DEFAULT_MODULE_KEYS.includes(m.key)
+                  : value.has(m.key)
+                return (
+                  <label key={m.key} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggle(m.key)}
+                      className="h-4 w-4 rounded border-[rgb(var(--border-strong))] accent-primary-600"
+                    />
+                    {m.label}
+                  </label>
+                )
+              })}
+          </div>
+          <p className="text-faint mt-2 text-xs">
+            {usingDefault
+              ? 'Default access. Untick a module to restrict this person.'
+              : `${value.size} module${value.size === 1 ? '' : 's'} granted. The server refuses the rest with 403, not just the menu.`}
+          </p>
+        </>
+      )}
+    </fieldset>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
 /* Add / edit form                                                             */
 /* -------------------------------------------------------------------------- */
 /**
@@ -126,7 +225,7 @@ function TextField({ label, hint, error, className, ...props }) {
  * fields pick up a different employee — syncing props into state with an
  * effect would render the previous person's details for a frame first.
  */
-function EmployeeForm({ mode, initial, busy, serverError, onSubmit, onCancel }) {
+function EmployeeForm({ mode, initial, busy, serverError, modules, onSubmit, onCancel }) {
   const [form, setForm] = useState(() => ({ ...BLANK_FORM, ...initial }))
   const [errors, setErrors] = useState({})
   const firstFieldRef = useRef(null)
@@ -178,6 +277,11 @@ function EmployeeForm({ mode, initial, busy, serverError, onSubmit, onCancel }) 
       department: form.department.trim(),
       designation: form.designation.trim(),
       email: form.email.trim() || null,
+      // `null` means the administrator never touched the checkboxes, so the
+      // caller omits the field and the account keeps following the default.
+      // A chosen set is sent as an array, `[]` included — that is how an
+      // explicit grant is cleared back to the default on edit.
+      permissions: form.permissions === null ? null : [...form.permissions],
     })
   }
 
@@ -192,14 +296,17 @@ function EmployeeForm({ mode, initial, busy, serverError, onSubmit, onCancel }) 
           value={form.employee_id}
           onChange={set('employee_id')}
           disabled={busy || mode === 'edit'}
-          placeholder="EMP001"
+          // Follows the role picked below, so the suggested ID matches the
+          // house convention: ADMIN-prefixed for administrators, EMP- for
+          // everyone else, each numbered from 001.
+          placeholder={form.role === 'ADMIN' ? 'ADMIN003' : 'EMP007'}
           spellCheck={false}
           autoCapitalize="characters"
           error={errors.employee_id}
           hint={
             mode === 'edit'
               ? 'The login identifier cannot be changed.'
-              : 'What they will sign in with. Stored upper-case.'
+              : `What they will sign in with. Stored upper-case. ${form.role === 'ADMIN' ? 'Administrators use ADMINnnn.' : 'Staff use EMPnnn.'}`
           }
         />
         <TextField
@@ -289,6 +396,16 @@ function EmployeeForm({ mode, initial, busy, serverError, onSubmit, onCancel }) 
           Active — can sign in. Clear this to revoke access without deleting the record.
         </span>
       </label>
+
+      <div className="border-t pt-4" style={{ borderColor: 'rgb(var(--border-subtle))' }}>
+        <ModuleAccess
+          modules={modules}
+          role={form.role}
+          value={form.permissions}
+          disabled={busy}
+          onChange={(next) => setForm((prev) => ({ ...prev, permissions: next }))}
+        />
+      </div>
 
       <div className="flex flex-wrap gap-2 pt-1">
         <Button type="submit" loading={busy} icon={mode === 'create' ? UserPlus : Pencil}>
@@ -383,6 +500,23 @@ export default function Admin() {
   const [formError, setFormError] = useState(null)
   const [flash, setFlash] = useState(null)
 
+  // The grantable module list, straight from the server. Fetched once and
+  // falling back to the local copy if the request fails, so a network blip
+  // degrades the checkboxes to a stale label list rather than an empty form.
+  const [modules, setModules] = useState(FALLBACK_MODULES)
+  useEffect(() => {
+    const controller = new AbortController()
+    api.admin
+      .modules({ signal: controller.signal })
+      .then((payload) => {
+        if (Array.isArray(payload?.modules) && payload.modules.length) {
+          setModules(payload.modules)
+        }
+      })
+      .catch(() => {})
+    return () => controller.abort()
+  }, [])
+
   // A keystroke per character would be a request per character.
   useEffect(() => {
     const id = window.setTimeout(() => setDebounced(search), 250)
@@ -452,6 +586,10 @@ export default function Admin() {
           email: form.email,
           password: form.password,
           is_active: form.is_active,
+          // Omitted when the administrator left the checkboxes alone, so the
+          // new account follows the role default rather than being pinned to
+          // whatever the default happened to be on the day it was created.
+          ...(form.permissions === null ? {} : { permissions: form.permissions }),
         }),
       `${form.employee_id} added.`,
     )
@@ -466,6 +604,7 @@ export default function Admin() {
           role: form.role,
           email: form.email,
           is_active: form.is_active,
+          ...(form.permissions === null ? {} : { permissions: form.permissions }),
         }),
       `${target.employee_id} updated.`,
     )
@@ -644,8 +783,8 @@ export default function Admin() {
   return (
     <div>
       <PageHeader
-        title="Employee Management"
-        description="Manage workforce access, roles and account status."
+        title="Employees"
+        description="Accounts and access."
         actions={
           <Button
             icon={UserPlus}
@@ -666,35 +805,22 @@ export default function Admin() {
         </Alert>
       )}
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Total employees"
-          value={data ? String(data.total) : '—'}
-          icon={Users}
-          accent="primary"
-          loading={loading && !data}
-        />
-        <StatCard
-          label="Active"
-          value={data ? String(data.active) : '—'}
-          icon={UserCheck}
-          accent="eco"
-          loading={loading && !data}
-        />
-        <StatCard
-          label="Administrators"
-          value={data ? String(data.admins) : '—'}
-          icon={ShieldCheck}
-          accent="violet"
-          loading={loading && !data}
-        />
-        <StatCard
-          label="Inactive accounts"
-          value={data ? String(data.inactive) : '—'}
-          icon={UserX}
-          accent="amber"
-          loading={loading && !data}
-        />
+      {/* Three counts, inline. Four stat cards for four integers was the kind
+          of card-per-metric habit this pass exists to remove; the inactive
+          count is still one click away in the status filter. */}
+      <div className="mb-6 flex flex-wrap items-baseline gap-x-8 gap-y-3">
+        {[
+          ['Employees', data?.total],
+          ['Active', data?.active],
+          ['Admins', data?.admins],
+        ].map(([label, value]) => (
+          <div key={label}>
+            <p className="numeric text-2xl font-semibold tracking-tight">
+              {value == null ? '—' : String(value)}
+            </p>
+            <p className="text-faint mt-0.5 text-[0.68rem] uppercase tracking-[0.12em]">{label}</p>
+          </div>
+        ))}
       </div>
 
       {panel === 'create' && (
@@ -709,6 +835,7 @@ export default function Admin() {
             initial={BLANK_FORM}
             busy={busy}
             serverError={formError}
+            modules={modules}
             onSubmit={handleCreate}
             onCancel={closePanel}
           />
@@ -728,9 +855,16 @@ export default function Admin() {
               role: target.role,
               email: target.email ?? '',
               is_active: target.is_active,
+              // Only seed an explicit set when this person actually has one.
+              // Someone on the default opens the form still on the default,
+              // so saving an unrelated field does not pin their access.
+              permissions: target.permissions_customised
+                ? new Set(target.permissions ?? [])
+                : null,
             }}
             busy={busy}
             serverError={formError}
+            modules={modules}
             onSubmit={handleUpdate}
             onCancel={closePanel}
           />
@@ -823,6 +957,7 @@ export default function Admin() {
       {viewing && (
         <EmployeeDrawer
           employee={viewing}
+          modules={modules}
           isSelf={viewing.id === session?.employee?.id}
           onClose={() => setViewing(null)}
           onEdit={() => {
@@ -868,7 +1003,7 @@ function DetailRow({ label, children }) {
  * cosmetic checklist. No password material appears here; the API never returns
  * any, so there is none to show.
  */
-function EmployeeDrawer({ employee, isSelf, onClose, onEdit, onReset, onToggleActive }) {
+function EmployeeDrawer({ employee, isSelf, modules, onClose, onEdit, onReset, onToggleActive }) {
   useEffect(() => {
     const onKey = (event) => event.key === 'Escape' && onClose()
     window.addEventListener('keydown', onKey)
@@ -963,14 +1098,26 @@ function EmployeeDrawer({ employee, isSelf, onClose, onEdit, onReset, onToggleAc
             </dl>
           </section>
 
+          {/* The real grant, as the server resolved it — not a role lookup
+              recomputed in the browser, so what this shows is what the API
+              will actually allow. */}
           <section>
-            <h3 className="text-faint mb-2 text-xs font-semibold uppercase tracking-wide">Access</h3>
+            <div className="mb-2 flex items-baseline justify-between gap-2">
+              <h3 className="text-faint text-xs font-semibold uppercase tracking-wide">Access</h3>
+              <span className="text-faint text-[0.68rem]">
+                {employee.role === 'ADMIN'
+                  ? 'Full — administrator'
+                  : employee.permissions_customised
+                    ? 'Custom'
+                    : 'Default'}
+              </span>
+            </div>
             <ul className="space-y-1.5">
-              {ACCESS_AREAS.map((area) => {
-                const allowed = area.roles.includes(employee.role)
+              {modules.map((mod) => {
+                const allowed = (employee.permissions ?? []).includes(mod.key)
                 return (
-                  <li key={area.key} className="flex items-center justify-between gap-3 text-sm">
-                    <span>{area.label}</span>
+                  <li key={mod.key} className="flex items-center justify-between gap-3 text-sm">
+                    <span className={allowed ? undefined : 'text-faint'}>{mod.label}</span>
                     {allowed ? (
                       <Check size={16} className="text-eco-500" aria-label="Allowed" />
                     ) : (
@@ -979,10 +1126,23 @@ function EmployeeDrawer({ employee, isSelf, onClose, onEdit, onReset, onToggleAc
                   </li>
                 )
               })}
+              <li
+                className="flex items-center justify-between gap-3 border-t pt-1.5 text-sm"
+                style={{ borderColor: 'rgb(var(--border-subtle))' }}
+              >
+                <span className={employee.role === 'ADMIN' ? undefined : 'text-faint'}>
+                  Employee management
+                </span>
+                {employee.role === 'ADMIN' ? (
+                  <Check size={16} className="text-eco-500" aria-label="Allowed" />
+                ) : (
+                  <X size={16} className="text-[rgb(var(--text-muted))]" aria-label="No access" />
+                )}
+              </li>
             </ul>
             <p className="text-faint mt-2 text-xs">
-              Derived from the role and enforced by the server — an employee calling an admin API
-              is refused with 403 regardless of what any screen shows.
+              Enforced by the server, not the menu — a module that is off here returns 403 to curl
+              as well. Employee management follows the role and cannot be granted.
             </p>
           </section>
         </div>

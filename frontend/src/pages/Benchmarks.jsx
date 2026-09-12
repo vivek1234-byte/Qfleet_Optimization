@@ -1,12 +1,5 @@
-/**
- * Algorithm benchmarking.
- *
- * The claim "quantum-inspired beats classical" is worth nothing from a single
- * run. This page runs each solver several times from different seeds and
- * reports the spread, including the runs where the classical baseline wins —
- * publishing that is what makes the rest of the table believable.
- */
-import { Activity, BarChart3, Gauge, HelpCircle, Play, Timer, Trophy } from 'lucide-react'
+/** Algorithm benchmarking — multi-seed comparison of quantum-inspired and classical solvers. */
+import { BarChart3, ChevronDown, Gauge, HelpCircle, Play } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 import {
   Bar,
@@ -37,7 +30,6 @@ import {
   NumberInput,
   PageHeader,
   Skeleton,
-  StatCard,
 } from '../components/ui'
 import { useAsync, useFetch } from '../hooks/useApi'
 import api from '../lib/api'
@@ -152,13 +144,66 @@ export default function Benchmarks() {
 
   return (
     <>
-      <PageHeader
-        title="Benchmarks"
-        description="Same problem, same budget, several seeds. Mean and standard deviation for every solver, quantum-inspired and classical alike."
-      />
+      <PageHeader title="Benchmarks" description="Which solver performs best." />
 
-      <div className="grid gap-5 xl:grid-cols-[19rem_minmax(0,1fr)]">
-        <div className="xl:sticky xl:top-20 xl:self-start">
+      <div className="mx-auto max-w-xl">
+        {bench.error && <ErrorState error={bench.error} onRetry={runBenchmark} className="mb-5" />}
+
+        {bench.loading ? (
+          <Skeleton className="h-32 w-full rounded-xl" />
+        ) : winner ? (
+          <>
+            <h2 className="text-faint text-xs font-semibold uppercase tracking-wide">
+              Algorithm performance
+            </h2>
+            <dl
+              className="mt-3 divide-y text-base"
+              style={{ borderColor: 'rgb(var(--border-subtle))' }}
+            >
+              {[
+                ['Best solver', winner.algorithm.toUpperCase()],
+                // The backend has no "solution quality" figure; the scalarised
+                // objective is what it ranks solvers on. Lower is better.
+                ['Scalarised objective', num(winner.best_fitness_mean, 4)],
+                ['Runtime', seconds(winner.time_seconds_mean)],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-baseline justify-between gap-4 py-3">
+                  <dt className="text-faint text-sm">{label}</dt>
+                  <dd className="numeric font-semibold">{value}</dd>
+                </div>
+              ))}
+            </dl>
+          </>
+        ) : (
+          <EmptyState
+            icon={BarChart3}
+            title="No benchmark run yet"
+            description="Configure solvers and fleet size in Technical details, then run."
+            action={
+              <Button icon={Play} onClick={runBenchmark}>
+                Run benchmark
+              </Button>
+            }
+          />
+        )}
+      </div>
+
+      <details
+        className="group mt-10 rounded-lg border"
+        style={{ borderColor: 'rgb(var(--border-subtle))' }}
+      >
+        <summary className="expand-toggle cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+          Technical details
+          <ChevronDown
+            size={14}
+            className="text-faint transition-transform group-open:rotate-180"
+            aria-hidden
+          />
+        </summary>
+        <div
+          className="space-y-5 border-t p-4"
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+        >
           <Card title="Benchmark setup">
             <div className="space-y-4">
               <div>
@@ -231,8 +276,7 @@ export default function Benchmarks() {
 
               <Alert tone="warning">
                 {config.algorithms.length} solvers × {config.n_runs} runs ={' '}
-                {config.algorithms.length * config.n_runs} optimisations. NSGA-II at a large fleet
-                is the slow one.
+                {config.algorithms.length * config.n_runs} optimisations.
               </Alert>
 
               <Button
@@ -255,65 +299,45 @@ export default function Benchmarks() {
               </Button>
             </div>
           </Card>
-        </div>
-
-        <div className="min-w-0 space-y-5">
-          {bench.error && <ErrorState error={bench.error} onRetry={runBenchmark} />}
-          {bench.loading && <Skeleton className="h-64 w-full rounded-xl" />}
-
-          {!report && !bench.loading && (
-            <Card>
-              <EmptyState
-                icon={BarChart3}
-                title="No benchmark run yet"
-                description="Five runs of four solvers on a ten-vessel problem takes a few seconds and is the single most useful slide you can bring to a jury."
-                action={
-                  <Button icon={Play} onClick={runBenchmark}>
-                    Run benchmark
-                  </Button>
-                }
-              />
-            </Card>
-          )}
 
           {report && (
             <>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard
-                  label="Winner"
-                  value={winner?.algorithm?.toUpperCase() ?? '—'}
-                  icon={Trophy}
-                  accent="amber"
-                  hint={winner?.algorithm_name}
-                />
-                <StatCard
-                  label="Best quantum"
-                  value={quantumBest ? num(quantumBest.best_fitness_mean, 4) : '—'}
-                  icon={Activity}
-                  accent="primary"
-                  hint={quantumBest?.algorithm?.toUpperCase()}
-                />
-                <StatCard
-                  label="Best classical"
-                  value={classicalBest ? num(classicalBest.best_fitness_mean, 4) : '—'}
-                  icon={Activity}
-                  accent="slate"
-                  hint={classicalBest?.algorithm?.toUpperCase()}
-                />
-                <StatCard
-                  label="Wall time"
-                  value={seconds(report.wall_time_seconds)}
-                  icon={Timer}
-                  accent="violet"
-                  hint={`${report.config?.n_runs} runs each`}
-                />
-              </div>
+              <dl
+                className="divide-y text-sm"
+                style={{ borderColor: 'rgb(var(--border-subtle))' }}
+              >
+                {[
+                  [
+                    'Best quantum',
+                    quantumBest ? num(quantumBest.best_fitness_mean, 4) : '—',
+                    quantumBest?.algorithm?.toUpperCase(),
+                  ],
+                  [
+                    'Best classical',
+                    classicalBest ? num(classicalBest.best_fitness_mean, 4) : '—',
+                    classicalBest?.algorithm?.toUpperCase(),
+                  ],
+                  [
+                    'Wall time',
+                    seconds(report.wall_time_seconds),
+                    `${report.config?.n_runs} runs each`,
+                  ],
+                ].map(([label, value, hint]) => (
+                  <div key={label} className="flex items-baseline justify-between gap-4 py-2.5">
+                    <dt className="text-faint">
+                      {label}
+                      {hint && <span className="ml-2 text-xs">{hint}</span>}
+                    </dt>
+                    <dd className="numeric">{value}</dd>
+                  </div>
+                ))}
+              </dl>
 
               {report.summary && <Alert tone="info">{report.summary}</Alert>}
 
               <Card
-                title="Mean objective with standard deviation"
-                description="Normalised weighted objective, lower is better. The whisker is one standard deviation across seeds."
+                title="Mean objective (lower is better)"
+                description="Whiskers show one standard deviation across seeds."
               >
                 <ChartFrame height={300}>
                   <BarChart data={fitnessData} margin={{ top: 16, right: 16, bottom: 10, left: 0 }}>
@@ -334,8 +358,7 @@ export default function Benchmarks() {
                   </BarChart>
                 </ChartFrame>
                 <p className="text-faint mt-3 text-xs">
-                  Where the error bars overlap, the difference between two solvers is not
-                  significant at this number of runs. Say so rather than claiming the win.
+                  Overlapping error bars indicate the difference is not statistically significant.
                 </p>
               </Card>
 
@@ -534,7 +557,7 @@ export default function Benchmarks() {
 
           <Card
             title="What the metrics mean"
-            description="Worth reading before defending a number in front of a panel"
+            description="Definitions for each reported metric"
             actions={<HelpCircle size={16} className="text-faint" aria-hidden />}
           >
             {guide.loading ? (
@@ -556,7 +579,7 @@ export default function Benchmarks() {
             )}
           </Card>
         </div>
-      </div>
+      </details>
     </>
   )
 }

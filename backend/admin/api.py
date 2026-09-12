@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.orm import Session
 
 from auth.deps import require_admin
+from auth.permissions import MODULES
 from auth.schemas import (
     AuditEntryOut,
     AuditListResponse,
@@ -113,6 +114,7 @@ def create(
         designation=payload.designation,
         email=payload.email,
         is_active=payload.is_active,
+        permissions=payload.permissions,
     )
     logger.info("%s created employee %s (%s)", actor.employee_id, employee.employee_id, employee.role)
     record_audit(db, actor=actor.employee_id, action="Created employee", target=employee.employee_id)
@@ -280,3 +282,21 @@ def audit(
         entries=[AuditEntryOut.model_validate(row, from_attributes=True) for row in rows],
         total=count_audit(db),
     )
+
+
+@router.get("/modules", summary="The module catalogue used for per-employee access")
+def modules() -> dict:
+    """
+    What an administrator can grant, and what the defaults are.
+
+    Served rather than hardcoded in the frontend so the checkbox list and the
+    server's enforcement can never disagree about which modules exist.
+    """
+    from auth.permissions import ADMIN_ONLY_MODULES, DEFAULT_EMPLOYEE_MODULES
+
+    return {
+        "modules": [
+            {**m, "admin_only": m["key"] in ADMIN_ONLY_MODULES} for m in MODULES
+        ],
+        "default_employee_modules": list(DEFAULT_EMPLOYEE_MODULES),
+    }

@@ -160,6 +160,9 @@ export const api = {
       post(`/api/admin/employees/${id}/revoke-sessions`, null, config),
     deleteEmployee: (id, config) => del(`/api/admin/employees/${id}`, config),
     audit: (params, config) => get('/api/admin/audit', { params, ...config }),
+    // The grantable module catalogue. Served rather than hardcoded so the
+    // checkboxes and the server's enforcement cannot drift apart.
+    modules: (config) => get('/api/admin/modules', config),
   },
 
   optimization: {
@@ -193,6 +196,9 @@ export const api = {
     ciiReference: (params, config) => get('/api/regulatory/cii-reference', { params, ...config }),
     rate: (body, config) => post('/api/regulatory/cii', body, config),
     seasonality: (params, config) => get('/api/regulatory/seasonality', { params, ...config }),
+    // Sea-state alerts for the warning dot. Reference data, so every signed-in
+    // user gets the warning regardless of which modules they hold.
+    alerts: (params, config) => get('/api/regulatory/alerts', { params, ...config }),
   },
 
   scenarios: {

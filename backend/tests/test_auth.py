@@ -421,6 +421,7 @@ ADMIN_ROUTES = [
     ("post", "/api/admin/employees/1/revoke-sessions", None),
     ("delete", "/api/admin/employees/1", None),
     ("get", "/api/admin/audit", None),
+    ("get", "/api/admin/modules", None),
 ]
 
 
@@ -784,22 +785,128 @@ class TestNormalisation:
         assert normalise_employee_id(raw) == expected
 
 
-class TestExistingApiIsUntouched:
+class TestDataRoutesRequireASession:
     """
-    Adding accounts must not have put a lock on the optimiser. These routes
-    were open before and stay open — see the deliverable note on why.
+    Per-employee module access only means something if the data endpoints
+    know who is asking.
+
+    These routes used to answer without a token. That was fine while access
+    was uniform, but once an administrator can revoke Fuel Prediction from
+    one person, an open ``/api/prediction`` hands it straight back to them
+    through curl — the restriction would be a menu that hides a door with no
+    lock. ``require_module`` in ``main.py`` closes them, so the guard is real.
+
+    ``/api/health`` stays open on purpose: monitoring and the login screen's
+    own status dot both poll it before anyone has signed in, and it exposes
+    no fleet data.
     """
+
+    def test_health_is_still_open(self, client):
+        assert client.get("/api/health").status_code == 200
 
     @pytest.mark.parametrize(
         "path",
         [
-            "/api/health",
+            "/api/optimization/algorithms",
+            "/api/optimization/registry",
+            "/api/regulatory/eca-zones",
+            "/api/benchmarks/metrics-guide",
+            "/api/prediction/metrics",
+            "/api/scenarios/fuels",
+        ],
+    )
+    def test_data_routes_refuse_an_anonymous_caller(self, client, path):
+        assert client.get(path).status_code == 401
+
+    @pytest.mark.parametrize(
+        "path",
+        [
             "/api/optimization/algorithms",
             "/api/optimization/registry",
             "/api/regulatory/eca-zones",
             "/api/benchmarks/metrics-guide",
         ],
     )
+    def test_an_administrator_still_reaches_everything(self, client, admin_headers, path):
+        assert client.get(path, headers=admin_headers).status_code == 200
+
+
+class TestGrantedScreensActuallyWork:
+    """
+    The bug this class exists to prevent.
+
+    Module access was first enforced a whole router at a time, which read
+    tidily and was wrong: screens share endpoints. The digital twin reads the
+    fuel catalogue that nominally belongs to Scenarios; every page with a map
+    reads ECA geometry that nominally belongs to Compliance. An employee on
+    the default grant opened the Fleet Digital Twin — a screen they were
+    explicitly allowed — and got "You do not have access to Scenarios".
+
+    So it is not enough to test that a revoked module is refused. Each of
+    these is an endpoint some granted screen calls on load, and a 403 here
+    means someone is locked out of a page they were given.
+    """
+
+    DEFAULT_SCREEN_CALLS = [
+        # catalogue and geometry — several screens draw on each
+        "/api/optimization/registry",
+        "/api/optimization/algorithms",
+        "/api/regulatory/eca-zones",
+        "/api/regulatory/seasonality",
+        "/api/regulatory/cii-reference",
+        "/api/scenarios/fuels",
+        # the granted features themselves
+        "/api/optimization/fleet?n_vessels=6&n_routes=3",
+        "/api/prediction/metrics",
+        "/api/prediction/model-info",
+    ]
+
+    @pytest.mark.parametrize("path", DEFAULT_SCREEN_CALLS)
+    def test_an_employee_on_default_access_can_load_their_screens(
+        self, client, staff_headers, path
+    ):
+        response = client.get(path, headers=staff_headers)
+        assert response.status_code == 200, (
+            f"{path} returned {response.status_code} to an employee on the default "
+            f"grant. Some screen they are allowed to open calls this on load."
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/api/benchmarks/results", "/api/scenarios/fleet"],
+    )
+    def test_a_module_they_were_never_granted_is_still_refused(
+        self, client, staff_headers, path
+    ):
+        assert client.get(path, headers=staff_headers).status_code == 403
+
+    def test_revoking_a_module_blocks_its_feature_but_not_the_catalogues(
+        self, client, admin_headers, staff_headers
+    ):
+        """Restricting Fuel Prediction must not take the fuel list with it."""
+        staff = client.get("/api/auth/me", headers=staff_headers).json()
+        client.put(
+            f"/api/admin/employees/{staff['id']}",
+            headers=admin_headers,
+            json={"permissions": ["dashboard", "simulator", "optimize", "fleet"]},
+        ).raise_for_status()
+        try:
+            assert client.get("/api/prediction/metrics", headers=staff_headers).status_code == 403
+            # Still reachable: other granted screens read these.
+            assert client.get("/api/scenarios/fuels", headers=staff_headers).status_code == 200
+            assert client.get("/api/optimization/registry", headers=staff_headers).status_code == 200
+        finally:
+            client.put(
+                f"/api/admin/employees/{staff['id']}",
+                headers=admin_headers,
+                json={"permissions": []},
+            )
+
+
+class TestExistingApiIsUntouched:
+    """Routes that are open by design and must stay that way."""
+
+    @pytest.mark.parametrize("path", ["/api/health"])
     def test_open_routes_still_answer_without_a_token(self, client, path):
         assert client.get(path).status_code == 200
 

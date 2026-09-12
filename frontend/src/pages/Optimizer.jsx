@@ -1,23 +1,10 @@
 /**
- * Fleet optimiser: configure a problem, run a solver, read the plan.
+ * Fleet Optimizer — CURRENT fleet → OPTIMIZE → BETTER PLAN.
  *
- * Everything on this page comes from a real solver run — there is no canned
- * result anywhere in it. The "Sail this plan" button hands the result to the
- * simulator, which is the demo's strongest single moment: the numbers on this
- * page become ships moving on the map.
+ * Everything on this page comes from a real solver run. "Sail this plan"
+ * hands the result to the simulator, where the numbers become ships on the map.
  */
-import {
-  Coins,
-  Droplets,
-  Leaf,
-  Play,
-  Radar,
-  Scale,
-  Settings2,
-  Sparkles,
-  Timer,
-  Trophy,
-} from 'lucide-react'
+import { ChevronDown, Play, Radar, Scale, Timer, Trophy } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -54,29 +41,31 @@ import {
   RangeInput,
   Select,
   Skeleton,
-  StatCard,
   cx,
 } from '../components/ui'
 import { useAsync, useFetch } from '../hooks/useApi'
 import api from '../lib/api'
 import {
+  COST_FIRST_WEIGHTS,
   MONTHS,
   OPTIMIZER_PRESETS,
   algorithmColor,
   ciiColor,
   fuelColor,
 } from '../lib/domain'
-import { compact, num, pct, seconds, usd } from '../lib/format'
+import { compact, formatObjective, num, pct, seconds, usd } from '../lib/format'
 import { setActivePlan } from '../lib/planStore'
 
 const EMPTY = []
 const EMPTY_OBJECT = {}
 
-const OBJECTIVE_META = {
-  fuel_consumption_tons: { label: 'Fuel', icon: Droplets, accent: 'primary', unit: 't' },
-  co2_emissions_tons: { label: 'CO₂e', icon: Leaf, accent: 'eco', unit: 't' },
-  operational_cost_usd: { label: 'Operating cost', icon: Coins, accent: 'amber', unit: '' },
+/** Short label for each objective the backend returns, in reading order. */
+const OBJECTIVE_LABEL = {
+  fuel_consumption_tons: 'Fuel',
+  co2_emissions_tons: 'CO₂',
+  operational_cost_usd: 'Cost',
 }
+const OBJECTIVE_ORDER = Object.keys(OBJECTIVE_LABEL)
 
 const TABS = [
   { id: 'plan', label: 'Deployment plan' },
@@ -85,14 +74,52 @@ const TABS = [
   { id: 'compare', label: 'Algorithm comparison' },
 ]
 
-function formatObjectiveValue(key, value) {
-  return key === 'operational_cost_usd' ? usd(value, { compact: true }) : `${compact(value)} t`
+/**
+ * One stage of the story: three inline figures, no cards.
+ *
+ * `improvements` is the backend's `improvement_vs_baseline`; nothing here is
+ * derived locally, so the arrows can only ever show a percentage the solver
+ * actually reported.
+ */
+function StatStrip({ keys, values, improvements }) {
+  return (
+    <div className="grid grid-cols-3">
+      {keys.map((key, index) => {
+        const saving = improvements?.[key]?.percent_saving
+        const hasSaving = typeof saving === 'number' && Number.isFinite(saving) && saving !== 0
+        const better = saving > 0
+        return (
+          <div
+            key={key}
+            className={cx(index > 0 && 'border-l pl-4 sm:pl-8')}
+            style={index > 0 ? { borderColor: 'rgb(var(--border-subtle))' } : undefined}
+          >
+            <p className="stat-value flex flex-wrap items-baseline gap-x-2 text-2xl sm:text-4xl">
+              {formatObjective(key, values?.[key])}
+              {hasSaving && (
+                <span
+                  className={cx(
+                    'text-sm font-semibold',
+                    better ? 'text-eco-600 dark:text-eco-400' : 'text-amber-600 dark:text-amber-400',
+                  )}
+                >
+                  {better ? '↓' : '↑'}
+                  {pct(Math.abs(saving))}
+                </span>
+              )}
+            </p>
+            <p className="stat-label mt-1.5">{OBJECTIVE_LABEL[key] ?? key}</p>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
 /* Configuration form                                                          */
 /* -------------------------------------------------------------------------- */
-function ConfigPanel({ config, setConfig, algorithms, fuels, onRun, running, presetId, setPresetId }) {
+function ConfigPanel({ config, setConfig, algorithms, fuels, presetId, setPresetId, className }) {
   const set = (key) => (event) => {
     const raw = event.target.value
     setConfig((c) => ({ ...c, [key]: raw === '' ? '' : Number(raw) }))
@@ -110,8 +137,20 @@ function ConfigPanel({ config, setConfig, algorithms, fuels, onRun, running, pre
     })
   }
 
+  // Three explicit columns rather than one stack or an auto-flow grid. This
+  // panel used to be a 20rem sidebar; left as a stack inside a full-width
+  // collapsible it hugged the left edge with two thirds of the row empty, and
+  // an auto-flow grid fixed that but left ragged gaps wherever a tall control
+  // set the row height. Each column now flows on its own.
   return (
-    <div className="space-y-5">
+    <div
+      className={cx(
+        'grid grid-cols-1 items-start gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-3',
+        className,
+      )}
+    >
+      {/* ---- column 1: what to solve ------------------------------------ */}
+      <div className="space-y-5">
       <div>
         <p className="field-label">Preset</p>
         <div className="grid grid-cols-3 gap-1.5">
@@ -153,7 +192,10 @@ function ConfigPanel({ config, setConfig, algorithms, fuels, onRun, running, pre
         }))}
         hint={(algorithms ?? []).find((a) => a.id === config.algorithm)?.description}
       />
+      </div>
 
+      {/* ---- column 2: problem size and conditions ---------------------- */}
+      <div className="space-y-5">
       <div className="grid grid-cols-2 gap-3">
         <NumberInput
           label="Vessels"
@@ -169,6 +211,9 @@ function ConfigPanel({ config, setConfig, algorithms, fuels, onRun, running, pre
           value={config.n_routes}
           onChange={set('n_routes')}
         />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
         <NumberInput
           label="Iterations"
           min={10}
@@ -222,7 +267,10 @@ function ConfigPanel({ config, setConfig, algorithms, fuels, onRun, running, pre
         onChange={set('carbon_price_usd_per_ton')}
         hint="Priced into the cost objective. EU ETS is the obvious sensitivity to show."
       />
+      </div>
 
+      {/* ---- column 3: what to optimise for ----------------------------- */}
+      <div className="space-y-5">
       <div>
         <p className="field-label">Objective weights</p>
         <div className="space-y-2.5">
@@ -278,16 +326,7 @@ function ConfigPanel({ config, setConfig, algorithms, fuels, onRun, running, pre
         onChange={set('seed')}
         hint="Fixed so a run on stage reproduces the one you rehearsed."
       />
-
-      <Button
-        className="w-full"
-        size="lg"
-        icon={Play}
-        loading={running}
-        onClick={onRun}
-      >
-        Run optimisation
-      </Button>
+      </div>
     </div>
   )
 }
@@ -892,6 +931,17 @@ export default function Optimizer() {
   const optimise = useAsync((signal, body) => api.optimization.optimize(body, { signal }))
   const compare = useAsync((signal, body) => api.optimization.compare(body, { signal }))
 
+  // CURRENT PLAN has to read as a real number before anything is solved,
+  // otherwise the three-stage story opens on a row of dashes. This is the same
+  // deterministic baseline deployment the dashboard shows. Once a run
+  // finishes, `baseline_objectives` from the response takes over — it is the
+  // baseline under the solver's own month and carbon price, so the comparison
+  // beneath it stays like for like.
+  const fleetBaseline = useFetch(
+    (signal) => api.optimization.fleet({ n_vessels: 8, n_routes: 5 }, { signal }),
+    [],
+  )
+
   const [presetId, setPresetId] = useState('demo')
   const [tab, setTab] = useState('plan')
   const [config, setConfig] = useState({
@@ -899,7 +949,9 @@ export default function Optimizer() {
     algorithm: 'qpso',
     seed: 42,
     carbon_price_usd_per_ton: 0,
-    weights: [0.4, 0.4, 0.2],
+    // Cost-first by default — see COST_FIRST_WEIGHTS in lib/domain.js for
+    // the six-seed measurement behind the split. The sliders move freely.
+    weights: COST_FIRST_WEIGHTS,
     fuel_types: [],
     month: '',
     speed_cap_knots: '',
@@ -943,23 +995,64 @@ export default function Optimizer() {
     navigate('/simulator')
   }
 
+  const objectiveKeys = result?.objective_names ?? OBJECTIVE_ORDER
+
   return (
     <>
-      <PageHeader
-        title="Fleet optimiser"
-        description="Choose which vessel sails which lane, how fast, on what fuel, and how much shore power to draw — minimising fuel, CO₂ and cost together."
-        actions={
-          result && (
-            <Button variant="eco" icon={Radar} onClick={sailPlan}>
-              Sail this plan
-            </Button>
-          )
-        }
-      />
+      <PageHeader title="Fleet Optimizer" description="Optimize fuel, CO₂ and cost." />
 
-      <div className="grid gap-5 xl:grid-cols-[20rem_minmax(0,1fr)]">
-        <div className="xl:sticky xl:top-20 xl:self-start">
-          <Card title="Problem" description="What to solve" className="overflow-visible">
+      <div className="space-y-10">
+        <section className="mx-auto w-full max-w-3xl">
+          <h2 className="stat-label mb-4">Current plan</h2>
+          <StatStrip
+            keys={objectiveKeys}
+            values={result?.baseline_objectives ?? fleetBaseline.data?.baseline?.objectives}
+          />
+        </section>
+
+        <div className="flex flex-col items-center gap-3">
+          <Button size="lg" icon={Play} loading={optimise.loading} onClick={runOptimise}>
+            Optimize
+          </Button>
+          {optimise.loading && <Skeleton className="h-1 w-48 rounded-full" />}
+        </div>
+
+        {optimise.error && <ErrorState error={optimise.error} onRetry={runOptimise} />}
+
+        {result && (
+          <section className="mx-auto w-full max-w-3xl space-y-8">
+            <div>
+              <h2 className="stat-label mb-4">Better plan</h2>
+              <StatStrip
+                keys={objectiveKeys}
+                values={result.best_objectives}
+                improvements={result.improvement_vs_baseline}
+              />
+            </div>
+            <div className="flex justify-center">
+              <Button variant="eco" size="lg" icon={Radar} onClick={sailPlan}>
+                Apply plan
+              </Button>
+            </div>
+          </section>
+        )}
+
+        {/* Centred on the same axis as the three stages above, so the
+            collapsible does not start at the window edge while the page it
+            belongs to sits in the middle. */}
+        <details
+          className="group mx-auto w-full max-w-5xl border-t"
+          style={{ borderColor: 'rgb(var(--border-subtle))' }}
+        >
+          <summary className="expand-toggle cursor-pointer list-none [&::-webkit-details-marker]:hidden">
+            Technical details
+            <ChevronDown
+              size={14}
+              className="text-faint transition-transform group-open:rotate-180"
+              aria-hidden
+            />
+          </summary>
+          <div className="min-w-0 space-y-5 px-1 pb-2 pt-2">
             {algorithms.error ? (
               <ErrorState error={algorithms.error} onRetry={algorithms.refetch} />
             ) : algorithms.loading ? (
@@ -974,134 +1067,90 @@ export default function Optimizer() {
                 setConfig={setConfig}
                 algorithms={algorithms.data}
                 fuels={fuels.data}
-                onRun={runOptimise}
-                running={optimise.loading}
                 presetId={presetId}
                 setPresetId={setPresetId}
               />
             )}
-          </Card>
-        </div>
 
-        <div className="min-w-0 space-y-5">
-          {optimise.error && <ErrorState error={optimise.error} onRetry={runOptimise} />}
-
-          {!result && !optimise.loading && (
-            <Card>
-              <EmptyState
-                icon={Settings2}
-                title="Nothing solved yet"
-                description="Pick a preset and run. The demo preset finishes in well under a second, which is the one to use with an audience watching."
-                action={
-                  <Button icon={Play} onClick={runOptimise} loading={optimise.loading}>
-                    Run optimisation
-                  </Button>
-                }
-              />
-            </Card>
-          )}
-
-          {optimise.loading && (
-            <div className="grid gap-4 sm:grid-cols-3">
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-28 w-full rounded-xl" />
-              ))}
-            </div>
-          )}
-
-          {result && (
-            <>
-              <div className="grid gap-4 sm:grid-cols-3">
-                {(result.objective_names ?? []).map((key) => {
-                  const meta = OBJECTIVE_META[key] ?? { label: key, icon: Sparkles, accent: 'slate' }
-                  const improvement = result.improvement_vs_baseline?.[key]
-                  return (
-                    <StatCard
-                      key={key}
-                      label={meta.label}
-                      value={formatObjectiveValue(key, result.best_objectives?.[key])}
-                      icon={meta.icon}
-                      accent={meta.accent}
-                      delta={improvement?.percent_saving}
-                      deltaLabel="vs baseline"
-                      hint={
-                        improvement
-                          ? `Baseline ${formatObjectiveValue(key, improvement.baseline)}`
-                          : undefined
-                      }
+            {result && (
+              <>
+                <div
+                  className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t pt-4 text-sm"
+                  style={{ borderColor: 'rgb(var(--border-subtle))' }}
+                >
+                  <span className="inline-flex items-center gap-2 font-medium">
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: algorithmColor(result.algorithm) }}
+                      aria-hidden
                     />
-                  )
-                })}
-              </div>
-
-              <div className="card flex flex-wrap items-center gap-x-5 gap-y-2 px-5 py-3 text-sm">
-                <span className="inline-flex items-center gap-2 font-medium">
-                  <span
-                    className="h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: algorithmColor(result.algorithm) }}
-                    aria-hidden
-                  />
-                  {result.algorithm_name}
-                </span>
-                <Badge tone={result.quantum_inspired ? 'primary' : 'neutral'}>
-                  {result.quantum_inspired ? 'quantum-inspired' : 'classical'}
-                </Badge>
-                <Badge tone={result.feasible ? 'eco' : 'danger'}>
-                  {result.feasible ? 'all constraints satisfied' : 'constraint violation'}
-                </Badge>
-                <span className="text-faint">
-                  {seconds(result.elapsed_seconds)} · {num(result.n_evaluations)} evaluations ·{' '}
-                  {result.iterations} iterations
-                </span>
-                {result.multi_objective && (
-                  <span className="text-faint">
-                    front {result.pareto_size} ({result.feasible_solutions} feasible)
+                    {result.algorithm_name}
                   </span>
-                )}
-              </div>
-
-              <div
-                className="flex gap-1 overflow-x-auto border-b"
-                style={{ borderColor: 'rgb(var(--border-subtle))' }}
-                role="tablist"
-              >
-                {TABS.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={tab === t.id}
-                    onClick={() => {
-                      setTab(t.id)
-                      if (t.id === 'compare' && !compare.data && !compare.loading) runCompare()
-                    }}
-                    className={cx(
-                      '-mb-px whitespace-nowrap border-b-2 px-4 py-2.5 text-sm font-medium transition-colors',
-                      tab === t.id
-                        ? 'border-primary-600 text-primary-700 dark:text-primary-300'
-                        : 'text-faint border-transparent hover:text-[rgb(var(--text-primary))]',
-                    )}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-
-              {tab === 'plan' && <PlanView result={result} />}
-              {tab === 'pareto' && <ParetoView result={result} />}
-              {tab === 'convergence' && <ConvergenceView result={result} />}
-              {tab === 'compare' && (
-                <>
-                  {compare.error && <ErrorState error={compare.error} onRetry={runCompare} />}
-                  {compare.loading && <Skeleton className="h-72 w-full rounded-xl" />}
-                  {!compare.loading && (
-                    <CompareView compare={compare.data} onRun={runCompare} running={compare.loading} />
+                  <Badge tone={result.quantum_inspired ? 'primary' : 'neutral'}>
+                    {result.quantum_inspired ? 'quantum-inspired' : 'classical'}
+                  </Badge>
+                  <Badge tone={result.feasible ? 'eco' : 'danger'}>
+                    {result.feasible ? 'all constraints satisfied' : 'constraint violation'}
+                  </Badge>
+                  <span className="text-faint">
+                    {num(result.n_evaluations)} evaluations · {result.iterations} iterations
+                  </span>
+                  {result.multi_objective && (
+                    <span className="text-faint">
+                      Pareto front: {result.pareto_size} solutions ({result.feasible_solutions}{' '}
+                      feasible)
+                    </span>
                   )}
-                </>
-              )}
-            </>
-          )}
-        </div>
+                  <span className="text-faint ml-auto">{seconds(result.elapsed_seconds)}</span>
+                </div>
+
+                <div
+                  className="flex gap-1 overflow-x-auto border-b"
+                  style={{ borderColor: 'rgb(var(--border-subtle))' }}
+                  role="tablist"
+                >
+                  {TABS.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      role="tab"
+                      aria-selected={tab === t.id}
+                      onClick={() => {
+                        setTab(t.id)
+                        if (t.id === 'compare' && !compare.data && !compare.loading) runCompare()
+                      }}
+                      className={cx(
+                        '-mb-px whitespace-nowrap border-b-2 px-4 py-2.5 text-sm font-medium transition-colors',
+                        tab === t.id
+                          ? 'border-primary-600 text-primary-700 dark:text-primary-300'
+                          : 'text-faint border-transparent hover:text-[rgb(var(--text-primary))]',
+                      )}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                {tab === 'plan' && <PlanView result={result} />}
+                {tab === 'pareto' && <ParetoView result={result} />}
+                {tab === 'convergence' && <ConvergenceView result={result} />}
+                {tab === 'compare' && (
+                  <>
+                    {compare.error && <ErrorState error={compare.error} onRetry={runCompare} />}
+                    {compare.loading && <Skeleton className="h-72 w-full rounded-xl" />}
+                    {!compare.loading && (
+                      <CompareView
+                        compare={compare.data}
+                        onRun={runCompare}
+                        running={compare.loading}
+                      />
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </div>
+        </details>
       </div>
     </>
   )

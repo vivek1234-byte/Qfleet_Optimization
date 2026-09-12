@@ -1,11 +1,4 @@
-/**
- * Fuel-transition scenarios.
- *
- * The optimiser answers "how should we sail the fleet we have". This page
- * answers the question that follows: "what if we changed the fuel", with the
- * retrofit capex and the availability reality attached, because a scenario
- * that ignores those is not a plan.
- */
+/** Fuel-transition scenarios — compare fuels, plan retrofits, model shore power. */
 import {
   Battery,
   CalendarRange,
@@ -216,7 +209,7 @@ function CompareTab({ fuels, fleet }) {
 
             <Card
               title="Six-way trade-off"
-              description="Each axis normalised to 0–100. Nothing wins on every axis — that is the point."
+              description="Each axis normalised to 0–100"
             >
               {radarData.length > 0 && (
                 <ChartFrame height={300}>
@@ -315,9 +308,7 @@ function CompareTab({ fuels, fleet }) {
               highlightRow={(row) => row.fuel_type === compare.data.best_value_for_money}
             />
             <p className="text-faint mt-3 text-xs">
-              Feasibility blends bunker availability with technology readiness. Ammonia scores
-              poorly today and that is the honest answer — the scenario is a 2035 question, not a
-              2026 one.
+              Feasibility blends bunker availability with technology readiness.
             </p>
           </Card>
         </>
@@ -403,7 +394,7 @@ function TransitionTab({ fuels }) {
 
           <Card
             title="Conversion path"
-            description="Vessels converted, cumulative capex and the emissions that fall out of it"
+            description="Vessels converted, cumulative capex, and resulting emissions"
           >
             <ChartFrame height={340}>
               <ComposedChart data={phases} margin={{ top: 10, right: 16, bottom: 10, left: 0 }}>
@@ -529,7 +520,7 @@ function ShorePowerTab() {
     <div className="space-y-5">
       <Card
         title="Cold ironing"
-        description="Shutting the auxiliary engines down alongside and drawing from the quay instead"
+        description="Replace auxiliary engines in port with quayside electricity"
       >
         <div className="grid gap-5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
           <RangeInput
@@ -607,9 +598,8 @@ function ShorePowerTab() {
               </BarChart>
             </ChartFrame>
             <Alert tone="info" className="mt-4">
-              Port emissions in scope: {num(data.port_emissions_co2_tons)} t/yr. Only ports with a
-              shore connection count — eight of the sixteen lanes in the registry have one, which
-              is why the achievable share is not 100%.
+              Port emissions in scope: {num(data.port_emissions_co2_tons)} t/yr. Only ports with
+              shore connections are included.
             </Alert>
           </Card>
         </>
@@ -625,7 +615,7 @@ function ReferenceTab({ fuels }) {
   return (
     <Card
       title="Fuel properties"
-      description="The physical constants every calculation on this site is built on"
+      description="Physical constants used across all calculations"
     >
       <DataTable
         columns={[
@@ -739,7 +729,7 @@ export default function Scenarios() {
     <>
       <PageHeader
         title="Fuel transition scenarios"
-        description="What changing fuel actually costs — in retrofit capex, in operating cost, and in emissions the fleet stops producing."
+        description="Retrofit capex, operating cost, and emissions impact of each fuel option."
       />
 
       {fuels.error && <ErrorState error={fuels.error} onRetry={fuels.refetch} className="mb-5" />}

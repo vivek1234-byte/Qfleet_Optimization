@@ -58,9 +58,9 @@ DEMO_EMPLOYEES = [
     ("ADMIN001", "Fleet Administrator", "ADMIN", "Operations", "Fleet Administrator", "admin@qfleet.local", "Admin@12345"),
     ("ADMIN002", "Rohit Deshmukh", "ADMIN", "Fleet Management", "Fleet Manager", "rohit.d@qfleet.local", "Admin@12345"),
     # ── Employees ──
-    ("EMP001", "Priya Nair", "EMPLOYEE", "Voyage Planning", "Voyage Planner", "priya.nair@qfleet.local", "Fleet@12345"),
-    ("EMP002", "Arjun Menon", "EMPLOYEE", "Bunkering", "Bunker Analyst", "arjun.menon@qfleet.local", "Fleet@12345"),
-    ("EMP003", "Sara Iqbal", "EMPLOYEE", "Compliance", "Compliance Officer", "sara.iqbal@qfleet.local", "Fleet@12345"),
+    ("EMP001", "Priya Nair", "EMPLOYEE", "Voyage Planning", "Voyage Planner", "priya.nair@qfleet.local", "Emp@12345"),
+    ("EMP002", "Arjun Menon", "EMPLOYEE", "Bunkering", "Bunker Analyst", "arjun.menon@qfleet.local", "Emp@12345"),
+    ("EMP003", "Sara Iqbal", "EMPLOYEE", "Compliance", "Compliance Officer", "sara.iqbal@qfleet.local", "Emp@12345"),
 ]
 
 
@@ -231,6 +231,50 @@ def cmd_seed(args) -> None:
         print("Nothing to do.")
 
 
+def cmd_demo_passwords(args) -> None:
+    """
+    Reset every account to the demo password for its role.
+
+    ``seed`` skips accounts that already exist, so it cannot fix the passwords
+    on a database that was seeded under an older scheme. This does, in one
+    step: administrators get the admin demo password, everyone else the staff
+    one. Same guard as ``seed``, for the same reason — these passwords are
+    published in this file and in the repository.
+    """
+    _require_schema()
+
+    if not settings.DEBUG and not args.force:
+        _die(
+            "refusing to set demo passwords outside development.\n"
+            "       These passwords are published in this repository.\n"
+            "       To do it anyway: set QGF_DEBUG=true, or pass --force"
+        )
+
+    admin_pw = next(row[6] for row in DEMO_EMPLOYEES if row[2] == "ADMIN")
+    staff_pw = next(row[6] for row in DEMO_EMPLOYEES if row[2] == "EMPLOYEE")
+
+    changed = []
+    with session_scope() as db:
+        for employee in list_employees(db, search=""):
+            password = admin_pw if employee.role == Role.ADMIN.value else staff_pw
+            # Goes through the same path as an administrator reset, so every
+            # existing session for that account is ended rather than left
+            # running on a password that no longer exists.
+            set_password(db, employee, password)
+            changed.append((employee.employee_id, employee.role, password))
+
+    if not changed:
+        print("No accounts. Run `python -m backend.manage seed` first.")
+        return
+
+    width = max(len(row[0]) for row in changed)
+    print("Reset:")
+    for employee_id, role, password in sorted(changed, key=lambda r: (r[1] != "ADMIN", r[0])):
+        print(f"  {employee_id:<{width}}  {role:<8}  password: {password}")
+    print("\nEvery session was ended. These are demo credentials — change them "
+          "before this is anywhere real.")
+
+
 def cmd_list(args) -> None:
     _require_schema()
     with session_scope() as db:
@@ -348,7 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     p = sub.add_parser("bootstrap", help="Create the first administrator")
-    p.add_argument("--employee-id", help="Default: EMP001 or QGF_ADMIN_EMPLOYEE_ID")
+    p.add_argument("--employee-id", help="Default: ADMIN001 or QGF_ADMIN_EMPLOYEE_ID")
     p.add_argument("--name", help="Default: Fleet Administrator or QGF_ADMIN_NAME")
     p.add_argument("--department", help="Default: Operations or QGF_ADMIN_DEPARTMENT")
     p.add_argument("--designation", help="Default: Fleet Administrator or QGF_ADMIN_DESIGNATION")
@@ -364,6 +408,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seed even outside development. The passwords are public; be sure.",
     )
     p.set_defaults(func=cmd_seed)
+
+    p = sub.add_parser(
+        "demo-passwords",
+        help="Reset every account to its role's demo password (development only)",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Do it even outside development. The passwords are public; be sure.",
+    )
+    p.set_defaults(func=cmd_demo_passwords)
 
     p = sub.add_parser("list", help="List employees")
     p.add_argument("--search", help="Filter by ID, name, department or email")

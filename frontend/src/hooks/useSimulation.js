@@ -52,7 +52,29 @@ export function useSimulation(
   { hoursPerSecond = 1, running = true, extraShips = EMPTY } = {},
 ) {
   const [decisions, setDecisions] = useState(createDecisions)
-  const [, setTick] = useState(0)
+  // The readouts React renders from. Set ONLY on the publish cadence below.
+  //
+  // This used to be a bare tick counter, with the readouts read straight off
+  // `engineRef.current` at render time. That coupled every number on the page
+  // to *when* React happened to render: the RAF loop mutates the ref sixty
+  // times a second, so a render triggered by anything at all — a zoom click,
+  // a pan, a hover — read a fresher, later value than the last publish. The
+  // voyage-cost figure visibly jumped every time the map was zoomed, because
+  // zooming re-rendered the page and the page re-read a moving number.
+  //
+  // Now the loop copies the engine state into React state four times a
+  // second, and that copy is what every readout uses. A render caused by the
+  // viewport shows exactly the same figures as the render before it. Only the
+  // clock advancing — or a decision, a scrub, a reset — produces a new copy.
+  const [published, setPublished] = useState(() => ({
+    hours: 0,
+    realSeconds: 0,
+    snapshots: EMPTY,
+    byId: new Map(),
+    events: EMPTY,
+    tally: { atSea: 0, inPort: 0, held: 0, total: 0 },
+    next: null,
+  }))
 
   // Everything the renderer reads at 60 fps, mutated in place.
   const engineRef = useRef({
@@ -75,6 +97,20 @@ export function useSimulation(
   // Live props for the loop, so changing the speed does not tear the loop down.
   const liveRef = useRef(null)
   liveRef.current = { hoursPerSecond, running, fleet, decisions, primaryIds }
+
+  /** Copy the engine's current readouts into React state. */
+  const publish = useCallback(() => {
+    const e = engineRef.current
+    setPublished({
+      hours: e.hours,
+      realSeconds: e.realSeconds,
+      snapshots: e.snapshots,
+      byId: e.byId,
+      events: e.events,
+      tally: e.tally,
+      next: e.next,
+    })
+  }, [])
 
   /** Recompute the world at `target` and republish it into `engineRef`. */
   const recompute = useCallback((target, { fromScratch = false } = {}) => {
@@ -124,8 +160,8 @@ export function useSimulation(
   // rather than being bolted onto the present.
   useEffect(() => {
     recompute(engineRef.current.hours, { fromScratch: true })
-    setTick((t) => t + 1)
-  }, [decisions, fleet, recompute])
+    publish()
+  }, [decisions, fleet, recompute, publish])
 
   /* ---- the one loop ----------------------------------------------------- */
   useEffect(() => {
@@ -147,13 +183,13 @@ export function useSimulation(
       // or a scrub made while paused still reaches the panels.
       if (ts - lastPublish >= PUBLISH_MS) {
         lastPublish = ts
-        setTick((t) => t + 1)
+        publish()
       }
     }
 
     frame = requestAnimationFrame(step)
     return () => cancelAnimationFrame(frame)
-  }, [recompute])
+  }, [recompute, publish])
 
   /* ---- controls --------------------------------------------------------- */
   const jumpTo = useCallback(
@@ -161,9 +197,9 @@ export function useSimulation(
       const target = Math.max(0, hours)
       // Backwards needs a replay from zero; forwards can continue cheaply.
       recompute(target, { fromScratch: target < engineRef.current.hours })
-      setTick((t) => t + 1)
+      publish()
     },
-    [recompute],
+    [recompute, publish],
   )
 
   const stepBy = useCallback((hours) => jumpTo(engineRef.current.hours + hours), [jumpTo])
@@ -175,8 +211,8 @@ export function useSimulation(
     // Dropping the decisions is the reset — the world is a function of them.
     setDecisions(createDecisions())
     recompute(0, { fromScratch: true })
-    setTick((t) => t + 1)
-  }, [recompute])
+    publish()
+  }, [recompute, publish])
 
   const hold = useCallback((id) => {
     setDecisions((d) => holdVessel(d, id, engineRef.current.hours))
@@ -221,9 +257,11 @@ export function useSimulation(
   }, [jumpTo])
 
   /* ---- readouts --------------------------------------------------------- */
-  // Read straight off the ref. It is mutated between renders on purpose; the
-  // 4 Hz `setTick` above is what makes React look at it again.
-  const engine = engineRef.current
+  // From the published copy, never the live ref — not even as a first-render
+  // fallback. `engineRef` is still handed out for the 60 fps renderer, which
+  // is the one consumer that *should* read the moving value: it draws
+  // position, not numbers anyone reads.
+  const engine = published
   return {
     hours: engine.hours,
     realSeconds: engine.realSeconds,
