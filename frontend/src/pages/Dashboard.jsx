@@ -132,12 +132,12 @@ export default function Dashboard() {
         }
       />
 
-      {health.error && <ErrorState error={health.error} onRetry={health.refetch} className="mb-5" />}
-      {optimise.error && <ErrorState error={optimise.error} onRetry={runDemo} className="mb-5" />}
+      {health.error && <ErrorState error={health.error} onRetry={health.refetch} className="mb-4" />}
+      {optimise.error && <ErrorState error={optimise.error} onRetry={runDemo} className="mb-4" />}
 
       {/* Headline result */}
       {result ? (
-        <div className="mb-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mb-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard
             label="Fuel saved"
             value={savings ? pct(savings.fuel_consumption_tons.percent_saving) : '—'}
@@ -180,7 +180,7 @@ export default function Dashboard() {
           />
         </div>
       ) : (
-        <Card className="mb-5">
+        <Card className="mb-4">
           <div className="flex flex-col items-start gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <p className="font-medium">Nothing optimised yet in this session.</p>
@@ -206,11 +206,11 @@ export default function Dashboard() {
         onOpenSimulator={() => navigate('/simulator')}
       />
 
-      <div className="mt-5">
+      <div className="mt-4">
         {/* System status — full width, its three blocks laid across the space
             rather than stacked in a narrow left column. */}
         <Card title="System" description="Everything this demo depends on">
-          <div className="grid gap-6 lg:min-h-[clamp(22rem,55vh,40rem)] lg:grid-cols-3">
+          <div className="grid gap-6 lg:grid-cols-3">
             {/* Dependency checks */}
             <div className="flex flex-col justify-center">
               {health.loading ? (
@@ -301,7 +301,7 @@ export default function Dashboard() {
       {/* Plan detail when we have one */}
       {result?.plan && (
         <Card
-          className="mt-5"
+          className="mt-4"
           title="Latest plan"
           description={`${result.plan.assignments.length} vessels deployed by ${result.algorithm_name}`}
           actions={
@@ -372,7 +372,7 @@ export default function Dashboard() {
 
       {/* Solver roster */}
       <Card
-        className="mt-5"
+        className="mt-4"
         title="Solvers"
         description="Two quantum-inspired, two classical baselines. The baselines are there to be beaten in public, not hidden."
       >
@@ -411,7 +411,7 @@ export default function Dashboard() {
       </Card>
 
       {/* Jump-off */}
-      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {[
           ['Live simulator', '/simulator', Radar, 'Watch the plan sail'],
           ['Fuel prediction', '/predict', Activity, 'What a voyage will burn'],
@@ -435,7 +435,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <p className="text-faint mt-5 flex items-center justify-center gap-2 text-xs">
+      <p className="text-faint mt-4 flex items-center justify-center gap-2 text-xs">
         <BookOpen size={13} aria-hidden />
         Every figure on this page came from a live call to the API — there are no fixtures in this
         build.

@@ -49,13 +49,13 @@ export default function App() {
         <Route element={<RequireAuth />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/simulator" element={<Simulator />} />
-          <Route path="/sandbox" element={<Sandbox />} />
+          <Route path="/sandbox" element={<RequireAdmin><Sandbox /></RequireAdmin>} />
           <Route path="/optimize" element={<Optimizer />} />
           <Route path="/predict" element={<Prediction />} />
           <Route path="/fleet" element={<Fleet />} />
           <Route path="/compliance" element={<Compliance />} />
-          <Route path="/scenarios" element={<Scenarios />} />
-          <Route path="/benchmarks" element={<Benchmarks />} />
+          <Route path="/scenarios" element={<RequireAdmin><Scenarios /></RequireAdmin>} />
+          <Route path="/benchmarks" element={<RequireAdmin><Benchmarks /></RequireAdmin>} />
           {/* Administrators only. `RequireAdmin` sits inside the group so the
               shell is not remounted on the way in; the server refuses the
               calls behind this page regardless of what the client renders. */}

@@ -1,17 +1,16 @@
 /**
- * Sign-in.
+ * Sign-in — dual-panel layout.
+ *
+ * Two login modes: Administrator and Employee. Both hit the same backend
+ * endpoint (`POST /api/auth/login`) and the role is determined by the
+ * account, not the panel — but the visual split tells users up front that
+ * there are two types of access and what each one reaches.
  *
  * The chart panel on the left is drawn from the same Natural Earth coastline
  * the application's maps use — bundled, so this screen renders identically
- * with the backend down or the venue Wi-Fi dead. It is a chart, not
- * decoration: graticule, port ticks, a marked equator.
- *
- * Sign-in is an Employee ID and a password, checked by the account server:
- * `POST /api/auth/login` looks the ID up in the `employees` table and
- * verifies the password against a bcrypt hash. See `src/lib/auth.js` for what
- * happens to the token it returns.
+ * with the backend down or the venue Wi-Fi dead.
  */
-import { Eye, EyeOff, Moon, Sun } from 'lucide-react'
+import { Eye, EyeOff, Moon, Shield, Sun, User } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
@@ -123,6 +122,79 @@ function Mark({ className }) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Role selector tabs                                                          */
+/* -------------------------------------------------------------------------- */
+const ROLES = [
+  {
+    key: 'admin',
+    label: 'Administrator',
+    icon: Shield,
+    description: 'Full access — manage employees, fleet operations and system settings.',
+    accent: 'violet',
+  },
+  {
+    key: 'employee',
+    label: 'Employee',
+    icon: User,
+    description: 'Voyage planning, fleet optimisation and compliance reporting.',
+    accent: 'primary',
+  },
+]
+
+function RoleTab({ role, active, onClick }) {
+  const Icon = role.icon
+  const isAdmin = role.key === 'admin'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cx(
+        'group flex flex-1 flex-col items-center gap-2 rounded-xl border-2 px-4 py-4 text-center transition-all',
+        active
+          ? isAdmin
+            ? 'border-violet-500 bg-violet-50 dark:border-violet-400 dark:bg-violet-950/30'
+            : 'border-primary-500 bg-primary-50 dark:border-primary-400 dark:bg-primary-950/30'
+          : 'border-[rgb(var(--border-subtle))] hover:border-[rgb(var(--border-strong))] hover:bg-[rgb(var(--surface-sunken))]',
+      )}
+    >
+      <span
+        className={cx(
+          'flex h-10 w-10 items-center justify-center rounded-lg transition-colors',
+          active
+            ? isAdmin
+              ? 'bg-violet-500 text-white dark:bg-violet-500'
+              : 'bg-primary-600 text-white dark:bg-primary-500'
+            : 'bg-[rgb(var(--surface-sunken))] text-[rgb(var(--text-muted))] group-hover:text-[rgb(var(--text-primary))]',
+        )}
+      >
+        <Icon size={20} />
+      </span>
+      <span
+        className={cx(
+          'text-sm font-semibold transition-colors',
+          active
+            ? isAdmin
+              ? 'text-violet-700 dark:text-violet-300'
+              : 'text-primary-700 dark:text-primary-300'
+            : 'text-[rgb(var(--text-muted))]',
+        )}
+      >
+        {role.label}
+      </span>
+      <span
+        className={cx(
+          'text-[0.7rem] leading-snug transition-colors',
+          active ? 'text-[rgb(var(--text-body))]' : 'text-[rgb(var(--text-muted))]',
+        )}
+      >
+        {role.description}
+      </span>
+    </button>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
 /* Page                                                                        */
 /* -------------------------------------------------------------------------- */
 export default function Login() {
@@ -130,6 +202,7 @@ export default function Login() {
   const location = useLocation()
   const [theme, toggleTheme] = useTheme()
 
+  const [loginRole, setLoginRole] = useState('admin')
   const [employeeId, setEmployeeId] = useState('')
   const [password, setPassword] = useState('')
   const [remember, setRemember] = useState(true)
@@ -182,6 +255,19 @@ export default function Login() {
     }
   }
 
+  // Clear form state when switching roles, so a half-typed admin ID does not
+  // linger in the employee panel.
+  const switchRole = (key) => {
+    if (key === loginRole) return
+    setLoginRole(key)
+    setEmployeeId('')
+    setPassword('')
+    setErrors({})
+    setFailure(null)
+    setShowPassword(false)
+    setCapsLock(false)
+  }
+
   const handleSubmit = async (event) => {
     event.preventDefault()
     if (submitting) return
@@ -220,9 +306,10 @@ export default function Login() {
   }
 
   const busy = submitting || isLocked
+  const isAdmin = loginRole === 'admin'
 
   return (
-    <div className="grid min-h-screen lg:grid-cols-[1fr_30rem] xl:grid-cols-[1fr_33rem]">
+    <div className="grid min-h-screen lg:grid-cols-[1fr_33rem] xl:grid-cols-[1fr_36rem]">
       {/* ---------------------------------------------------------------- */}
       {/* Chart panel                                                       */}
       {/* ---------------------------------------------------------------- */}
@@ -295,7 +382,7 @@ export default function Login() {
           {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
         </button>
 
-        <div className="mx-auto w-full max-w-[25rem]">
+        <div className="mx-auto w-full max-w-[28rem]">
           {/* Brand block, for the widths where the chart panel is not shown. */}
           <div className="mb-9 flex items-start gap-3 lg:hidden">
             <Mark className="mt-0.5 h-7 w-7 shrink-0 text-primary-600 dark:text-primary-400" />
@@ -309,147 +396,307 @@ export default function Login() {
             </div>
           </div>
 
-          <header>
-            <h2 className="text-xl font-semibold tracking-tight">Sign in</h2>
+          <header className="mb-6">
+            <h2 className="text-xl font-semibold tracking-tight">Sign in to your account</h2>
             <p className="text-body mt-1.5 text-sm">
-              Access voyage planning, fleet optimisation and compliance reporting.
+              Select your role and enter your credentials.
             </p>
           </header>
 
+          {/* ---- Role selector ---- */}
+          <div className="mb-6 flex gap-3" role="radiogroup" aria-label="Login type">
+            {ROLES.map((role) => (
+              <RoleTab
+                key={role.key}
+                role={role}
+                active={loginRole === role.key}
+                onClick={() => switchRole(role.key)}
+              />
+            ))}
+          </div>
+
           {notice && (
-            <Alert tone="warning" className="mt-5" onDismiss={dismissNotice}>
+            <Alert tone="warning" className="mb-5" onDismiss={dismissNotice}>
               {notice}
             </Alert>
           )}
 
           {failure && (
-            <Alert tone="error" className="mt-5" onDismiss={() => setFailure(null)}>
+            <Alert tone="error" className="mb-5" onDismiss={() => setFailure(null)}>
               {failure}
             </Alert>
           )}
 
-          <form onSubmit={handleSubmit} noValidate className="mt-7 space-y-5">
-            <div>
-              <label htmlFor="login-employee-id" className="auth-label">
-                Employee ID
-              </label>
-              <input
-                id="login-employee-id"
-                ref={employeeIdRef}
-                type="text"
-                autoComplete="username"
-                autoFocus
-                spellCheck={false}
-                autoCapitalize="characters"
-                placeholder="EMP001"
-                value={employeeId}
-                disabled={busy}
-                aria-invalid={errors.employeeId ? 'true' : undefined}
-                aria-describedby={errors.employeeId ? 'login-employee-id-error' : undefined}
-                onChange={(event) => {
-                  setEmployeeId(event.target.value)
-                  if (errors.employeeId) setErrors((e) => ({ ...e, employeeId: undefined }))
-                }}
-                className="field-control"
-              />
-              {errors.employeeId && (
-                <p id="login-employee-id-error" className="auth-error">
-                  {errors.employeeId}
-                </p>
+          {/* ---- Login form ---- */}
+          <div
+            className={cx(
+              'rounded-xl border-2 p-5 transition-colors',
+              isAdmin
+                ? 'border-violet-200 dark:border-violet-800/50'
+                : 'border-primary-200 dark:border-primary-800/50',
+            )}
+          >
+            <div className="mb-4 flex items-center gap-2.5">
+              {isAdmin ? (
+                <Shield size={18} className="text-violet-600 dark:text-violet-400" />
+              ) : (
+                <User size={18} className="text-primary-600 dark:text-primary-400" />
               )}
+              <h3
+                className={cx(
+                  'text-sm font-semibold',
+                  isAdmin
+                    ? 'text-violet-700 dark:text-violet-300'
+                    : 'text-primary-700 dark:text-primary-300',
+                )}
+              >
+                {isAdmin ? 'Administrator Login' : 'Employee Login'}
+              </h3>
             </div>
 
-            <div>
-              <div className="flex items-baseline justify-between gap-3">
-                <label htmlFor="login-password" className="auth-label">
-                  Password
+            <form onSubmit={handleSubmit} noValidate className="space-y-4">
+              <div>
+                <label htmlFor="login-employee-id" className="auth-label">
+                  {isAdmin ? 'Admin ID' : 'Employee ID'}
                 </label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setOwnNotice(
-                      'Passwords are reset by an administrator from the Employees page — there is no self-service reset. Ask them to set a new one for your Employee ID.',
-                    )
-                  }
-                  className="text-xs text-primary-700 underline-offset-2 hover:underline dark:text-primary-400"
-                >
-                  Forgot password?
-                </button>
-              </div>
-              <div className="relative">
                 <input
-                  id="login-password"
-                  ref={passwordRef}
-                  type={showPassword ? 'text' : 'password'}
-                  autoComplete="current-password"
-                  placeholder="••••••••"
-                  value={password}
+                  id="login-employee-id"
+                  ref={employeeIdRef}
+                  type="text"
+                  autoComplete="username"
+                  autoFocus
+                  spellCheck={false}
+                  autoCapitalize="characters"
+                  placeholder={isAdmin ? 'ADMIN001' : 'EMP001'}
+                  value={employeeId}
                   disabled={busy}
-                  aria-invalid={errors.password ? 'true' : undefined}
-                  aria-describedby={
-                    [errors.password && 'login-password-error', capsLock && 'login-capslock']
-                      .filter(Boolean)
-                      .join(' ') || undefined
-                  }
-                  onKeyDown={trackCapsLock}
-                  onKeyUp={trackCapsLock}
-                  onBlur={() => setCapsLock(false)}
+                  aria-invalid={errors.employeeId ? 'true' : undefined}
+                  aria-describedby={errors.employeeId ? 'login-employee-id-error' : undefined}
                   onChange={(event) => {
-                    setPassword(event.target.value)
-                    if (errors.password) setErrors((e) => ({ ...e, password: undefined }))
+                    setEmployeeId(event.target.value)
+                    if (errors.employeeId) setErrors((e) => ({ ...e, employeeId: undefined }))
                   }}
-                  className="field-control pr-11"
+                  className="field-control"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  aria-label={showPassword ? 'Hide password' : 'Show password'}
-                  aria-pressed={showPassword}
-                  className="text-faint absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-lg transition-colors hover:text-[rgb(var(--text-primary))]"
-                >
-                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
+                {errors.employeeId && (
+                  <p id="login-employee-id-error" className="auth-error">
+                    {errors.employeeId}
+                  </p>
+                )}
               </div>
-              {errors.password && (
-                <p id="login-password-error" className="auth-error">
-                  {errors.password}
-                </p>
-              )}
-              {/* The commonest reason a correct password is rejected. Worth a
-                  line here rather than a failed attempt against the limiter. */}
-              {capsLock && !errors.password && (
-                <p
-                  id="login-capslock"
-                  role="status"
-                  className="mt-1.5 text-xs text-amber-600 dark:text-amber-400"
-                >
-                  Caps Lock is on.
-                </p>
-              )}
-            </div>
 
-            <label className="flex cursor-pointer select-none items-center gap-2.5 text-sm">
-              <input
-                type="checkbox"
-                checked={remember}
+              <div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <label htmlFor="login-password" className="auth-label">
+                    Password
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOwnNotice(
+                        'Passwords are reset by an administrator from the Employees page — there is no self-service reset. Ask them to set a new one for your Employee ID.',
+                      )
+                    }
+                    className="text-xs text-primary-700 underline-offset-2 hover:underline dark:text-primary-400"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+                <div className="relative">
+                  <input
+                    id="login-password"
+                    ref={passwordRef}
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    placeholder="••••••••"
+                    value={password}
+                    disabled={busy}
+                    aria-invalid={errors.password ? 'true' : undefined}
+                    aria-describedby={
+                      [errors.password && 'login-password-error', capsLock && 'login-capslock']
+                        .filter(Boolean)
+                        .join(' ') || undefined
+                    }
+                    onKeyDown={trackCapsLock}
+                    onKeyUp={trackCapsLock}
+                    onBlur={() => setCapsLock(false)}
+                    onChange={(event) => {
+                      setPassword(event.target.value)
+                      if (errors.password) setErrors((e) => ({ ...e, password: undefined }))
+                    }}
+                    className="field-control pr-11"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    className="text-faint absolute inset-y-0 right-0 grid w-11 place-items-center rounded-r-lg transition-colors hover:text-[rgb(var(--text-primary))]"
+                  >
+                    {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                  </button>
+                </div>
+                {errors.password && (
+                  <p id="login-password-error" className="auth-error">
+                    {errors.password}
+                  </p>
+                )}
+                {capsLock && !errors.password && (
+                  <p
+                    id="login-capslock"
+                    role="status"
+                    className="mt-1.5 text-xs text-amber-600 dark:text-amber-400"
+                  >
+                    Caps Lock is on.
+                  </p>
+                )}
+              </div>
+
+              <label className="flex cursor-pointer select-none items-center gap-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={remember}
+                  disabled={busy}
+                  onChange={(event) => setRemember(event.target.checked)}
+                  className="h-4 w-4 cursor-pointer rounded border-[rgb(var(--border-strong))] accent-primary-600"
+                />
+                <span className="text-body">Keep me signed in on this device</span>
+              </label>
+
+              <button
+                type="submit"
                 disabled={busy}
-                onChange={(event) => setRemember(event.target.checked)}
-                className="h-4 w-4 cursor-pointer rounded border-[rgb(var(--border-strong))] accent-primary-600"
-              />
-              <span className="text-body">Keep me signed in on this device</span>
-            </label>
+                className={cx(
+                  'auth-button-primary',
+                  isAdmin && 'bg-violet-600 hover:bg-violet-700 dark:bg-violet-600 dark:hover:bg-violet-500',
+                )}
+              >
+                {submitting
+                  ? 'Signing in…'
+                  : lockedFor > 0
+                    ? `Try again in ${lockedFor}s`
+                    : isAdmin
+                      ? 'Sign in as Administrator'
+                      : 'Sign in as Employee'}
+              </button>
+            </form>
+          </div>
 
-            <button type="submit" disabled={busy} className="auth-button-primary">
-              {submitting
-                ? 'Signing in…'
-                : lockedFor > 0
-                  ? `Try again in ${lockedFor}s`
-                  : 'Sign in'}
-            </button>
-          </form>
+          {/* ---- Access summary ---- */}
+          <div className="mt-5 rounded-lg border p-4" style={{ borderColor: 'rgb(var(--border-subtle))' }}>
+            <p className="text-faint mb-2 text-xs font-semibold uppercase tracking-wide">
+              {isAdmin ? 'Administrator access includes' : 'Employee access includes'}
+            </p>
+            <ul className="text-body grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              {/* Shared operational pages — both roles */}
+              <li className="flex items-center gap-1.5">
+                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                Dashboard
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                Live simulator
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                Fleet optimiser
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                Compliance
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                Fuel prediction
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="h-1 w-1 shrink-0 rounded-full bg-emerald-500" />
+                Fleet &amp; lanes
+              </li>
+              {/* Admin-only pages */}
+              {isAdmin && (
+                <>
+                  <li className="flex items-center gap-1.5">
+                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
+                    <span className="font-medium">What-if sandbox</span>
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
+                    <span className="font-medium">Scenarios</span>
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
+                    <span className="font-medium">Benchmarks</span>
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
+                    <span className="font-medium">Employee management</span>
+                  </li>
+                  <li className="flex items-center gap-1.5">
+                    <span className="h-1 w-1 shrink-0 rounded-full bg-violet-500" />
+                    <span className="font-medium">Audit log</span>
+                  </li>
+                </>
+              )}
+            </ul>
+            {isAdmin && (
+              <p className="text-faint mt-2.5 text-[0.68rem] leading-relaxed">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-violet-500 align-middle mr-1" />
+                Violet items are admin-exclusive. Administrators can view all employee details
+                (ID, name, department, designation, email, role, status) but{' '}
+                <strong>passwords are never visible</strong> — they are stored as bcrypt hashes
+                and can only be reset, never read.
+              </p>
+            )}
+          </div>
+
+          {/* ---- Demo credentials hint ---- */}
+          <div
+            className={cx(
+              'mt-4 rounded-lg border p-3',
+              isAdmin
+                ? 'border-violet-300 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/30'
+                : 'border-primary-300 bg-primary-50 dark:border-primary-800 dark:bg-primary-950/30',
+            )}
+          >
+            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-faint">
+              Demo credentials
+            </p>
+            {isAdmin ? (
+              <div className="space-y-1 text-xs">
+                <p className="text-body">
+                  <span className="font-medium">ID:</span>{' '}
+                  <code className="rounded bg-violet-100 px-1.5 py-0.5 font-mono text-violet-800 dark:bg-violet-900/50 dark:text-violet-300">
+                    ADMIN001
+                  </code>
+                </p>
+                <p className="text-body">
+                  <span className="font-medium">Password:</span>{' '}
+                  <code className="rounded bg-violet-100 px-1.5 py-0.5 font-mono text-violet-800 dark:bg-violet-900/50 dark:text-violet-300">
+                    Admin@12345
+                  </code>
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1 text-xs">
+                <p className="text-body">
+                  <span className="font-medium">ID:</span>{' '}
+                  <code className="rounded bg-primary-100 px-1.5 py-0.5 font-mono text-primary-800 dark:bg-primary-900/50 dark:text-primary-300">
+                    EMP001
+                  </code>
+                </p>
+                <p className="text-body">
+                  <span className="font-medium">Password:</span>{' '}
+                  <code className="rounded bg-primary-100 px-1.5 py-0.5 font-mono text-primary-800 dark:bg-primary-900/50 dark:text-primary-300">
+                    Fleet@12345
+                  </code>
+                </p>
+              </div>
+            )}
+          </div>
 
           <p
-            className="text-faint mt-8 border-t pt-5 text-xs leading-relaxed"
+            className="text-faint mt-6 border-t pt-5 text-xs leading-relaxed"
             style={{ borderColor: 'rgb(var(--border-subtle))' }}
           >
             Accounts are issued by your fleet administrator. Sign-in is checked against the

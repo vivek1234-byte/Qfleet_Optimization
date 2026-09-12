@@ -54,11 +54,13 @@ from db.session import get_engine, session_scope  # noqa: E402
 # changed; this is a walkthrough dataset, not a set of real accounts.
 DEMO_EMPLOYEES = [
     # id, name, role, department, designation, email, password
-    ("EMP001", "Fleet Administrator", "ADMIN", "Operations", "Fleet Administrator", "admin@qfleet.local", "Admin@12345"),
-    ("EMP002", "Priya Nair", "EMPLOYEE", "Voyage Planning", "Voyage Planner", "priya.nair@qfleet.local", "Fleet@12345"),
-    ("EMP003", "Arjun Menon", "EMPLOYEE", "Bunkering", "Bunker Analyst", "arjun.menon@qfleet.local", "Fleet@12345"),
-    ("EMP004", "Sara Iqbal", "EMPLOYEE", "Compliance", "Compliance Officer", "sara.iqbal@qfleet.local", "Fleet@12345"),
-    ("EMP005", "Rohit Deshmukh", "ADMIN", "Fleet Management", "Fleet Manager", "rohit.d@qfleet.local", "Admin@12345"),
+    # ── Administrators ──
+    ("ADMIN001", "Fleet Administrator", "ADMIN", "Operations", "Fleet Administrator", "admin@qfleet.local", "Admin@12345"),
+    ("ADMIN002", "Rohit Deshmukh", "ADMIN", "Fleet Management", "Fleet Manager", "rohit.d@qfleet.local", "Admin@12345"),
+    # ── Employees ──
+    ("EMP001", "Priya Nair", "EMPLOYEE", "Voyage Planning", "Voyage Planner", "priya.nair@qfleet.local", "Fleet@12345"),
+    ("EMP002", "Arjun Menon", "EMPLOYEE", "Bunkering", "Bunker Analyst", "arjun.menon@qfleet.local", "Fleet@12345"),
+    ("EMP003", "Sara Iqbal", "EMPLOYEE", "Compliance", "Compliance Officer", "sara.iqbal@qfleet.local", "Fleet@12345"),
 ]
 
 
@@ -161,7 +163,7 @@ def cmd_bootstrap(args) -> None:
             )
             return
 
-        employee_id = args.employee_id or os.getenv("QGF_ADMIN_EMPLOYEE_ID") or "EMP001"
+        employee_id = args.employee_id or os.getenv("QGF_ADMIN_EMPLOYEE_ID") or "ADMIN001"
         full_name = args.name or os.getenv("QGF_ADMIN_NAME") or "Fleet Administrator"
         department = args.department or os.getenv("QGF_ADMIN_DEPARTMENT") or "Operations"
         password = args.password or os.getenv("QGF_ADMIN_PASSWORD") or _prompt_password()
