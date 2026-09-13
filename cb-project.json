@@ -1,0 +1,23 @@
+{
+    "serviceRole":  "arn:aws:iam::622111840104:role/qfleet-codebuild-role",
+    "environment":  {
+                        "privilegedMode":  true,
+                        "computeType":  "BUILD_GENERAL1_SMALL",
+                        "environmentVariables":  [
+                                                     {
+                                                         "value":  "622111840104",
+                                                         "name":  "AWS_ACCOUNT_ID"
+                                                     }
+                                                 ],
+                        "type":  "LINUX_CONTAINER",
+                        "image":  "aws/codebuild/standard:7.0"
+                    },
+    "name":  "qfleet-build",
+    "source":  {
+                   "type":  "GITHUB",
+                   "location":  "https://github.com/vivek1234-byte/Qfleet_Optimization.git"
+               },
+    "artifacts":  {
+                      "type":  "NO_ARTIFACTS"
+                  }
+}
