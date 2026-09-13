@@ -991,7 +991,7 @@ export default function Simulator() {
           the map gives back the rows they occupy or the page overflows again. */}
       <div className="grid gap-3 xl:h-[calc(100vh-37rem)] xl:min-h-[190px] xl:grid-cols-[minmax(0,1fr)_clamp(320px,26vw,400px)] 2xl:h-[calc(100vh-31rem)]">
         {/* Map */}
-        <div className="card relative h-[62vh] min-h-[420px] min-w-0 overflow-hidden p-0 xl:h-full">
+        <div className="card relative h-[62vh] min-h-[420px] min-w-0 overflow-hidden p-0 xl:h-full xl:min-h-0">
           {loading ? (
             <div className="text-faint grid h-full place-items-center text-sm">
               Loading the lane network…
