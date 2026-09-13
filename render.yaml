@@ -1,0 +1,26 @@
+# Render blueprint — deploy with "New > Blueprint Instance" and point it at
+# this repo.  The backend runs from the Dockerfile; the frontend stays on
+# Vercel and only needs VITE_API_BASE_URL set to the Render service URL.
+#
+# Environment variables marked `sync: false` must be set manually in the
+# Render dashboard after the first deploy (they hold secrets).
+
+services:
+  - type: web
+    name: qfleet-api
+    runtime: docker
+    repo: https://github.com/vivek1234-byte/Qfleet_Optimization.git
+    branch: main
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      # --- required secrets (set in Render dashboard) ---
+      - key: QGF_JWT_SECRET
+        sync: false
+      # --- optional: seed demo accounts on first boot ---
+      - key: QGF_SEED_DEMO
+        value: "true"
+      # --- CORS: allow the Vercel frontend ---
+      - key: QGF_CORS_ORIGINS
+        value: "https://qfleetoptimization.vercel.app,http://localhost:5173,http://127.0.0.1:5173"
