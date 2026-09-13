@@ -25,7 +25,12 @@ RUN rm -f backend/data/qfleet.db backend/data/qfleet.db-shm backend/data/qfleet.
 # Train the fuel model into the image so prediction works on first boot.
 RUN python train_model.py
 
-ENV PORT=8000
-EXPOSE 8000
+# HF Spaces requires port 7860 and runs as uid 1000.
+RUN useradd -m -u 1000 appuser \
+ && chown -R appuser:appuser /app
+USER appuser
+
+ENV PORT=7860
+EXPOSE 7860
 
 CMD ["./deploy/start.sh"]
