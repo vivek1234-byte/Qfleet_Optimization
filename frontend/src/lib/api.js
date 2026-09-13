@@ -225,6 +225,10 @@ export function streamOptimization(params, { onStart, onProgress, onDone, onErro
   Object.entries(params).forEach(([key, value]) => {
     if (value !== null && value !== undefined && value !== '') query.set(key, String(value))
   })
+  const token = tokenProvider()
+  if (token) {
+    query.set('token', token)
+  }
 
   const source = new EventSource(`${baseURL}/api/optimization/stream?${query}`)
   let settled = false

@@ -27,9 +27,15 @@ GENERIC_AUTH_MESSAGE = "Invalid Employee ID or password"
 def _bearer_token(request: Request) -> Optional[str]:
     header = request.headers.get("Authorization") or ""
     scheme, _, token = header.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        return None
-    return token.strip()
+    if scheme.lower() == "bearer" and token.strip():
+        return token.strip()
+    
+    # Fallback for EventSource (Server-Sent Events) which cannot send headers
+    query_token = request.query_params.get("token")
+    if query_token:
+        return query_token.strip()
+        
+    return None
 
 
 def get_current_employee(
