@@ -2,16 +2,15 @@
 Vercel Serverless Function entry point.
 
 Wraps the FastAPI app so Vercel can serve it as a serverless function.
-On each cold start: migrates the DB schema and seeds demo accounts into
-a /tmp SQLite database (Vercel's only writable directory).
+On each cold start: creates the DB schema directly (no alembic — too slow)
+and seeds demo accounts with pre-computed password hashes (no bcrypt at
+runtime) into a /tmp SQLite database.
 """
 import os
 import sys
 from pathlib import Path
 
 # ---- Paths ----------------------------------------------------------------
-# Vercel unpacks the project at a read-only location. The backend modules need
-# to be importable, and the database must live in /tmp (the only writable dir).
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_DIR = PROJECT_ROOT / "backend"
 
@@ -19,78 +18,80 @@ for p in (str(PROJECT_ROOT), str(BACKEND_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-# Point SQLite at /tmp so it survives within a single function instance.
-# Data will be lost on cold starts — acceptable for a demo.
+# Point SQLite at /tmp so it's writable on Vercel's read-only filesystem.
 TMP_DB = "/tmp/qfleet.db"
 os.environ.setdefault("QGF_DATABASE_URL", f"sqlite:///{TMP_DB}")
 
-# Allow the Vercel frontend origin for CORS.
+# CORS: allow the Vercel frontend.
 os.environ.setdefault(
     "QGF_CORS_ORIGINS",
     "https://qfleetoptimization.vercel.app,http://localhost:5173,http://127.0.0.1:5173",
 )
 
-# Seed demo accounts automatically on every cold start.
-os.environ.setdefault("QGF_SEED_DEMO", "true")
-
-# Use an ephemeral JWT secret if none is set (sessions won't survive cold starts).
+# Ephemeral JWT secret (sessions won't survive cold starts — fine for demo).
 if not os.environ.get("QGF_JWT_SECRET"):
     import secrets
     os.environ["QGF_JWT_SECRET"] = secrets.token_urlsafe(48)
 
-# ---- Bootstrap the database on cold start ---------------------------------
+
+# ---- Fast DB bootstrap (no alembic, pre-computed hashes) ------------------
 def _bootstrap_db():
-    """Run migrations + seed on cold start if DB doesn't exist yet."""
+    """Create tables + seed demo users. Runs in <200ms."""
     db_path = Path(TMP_DB)
     if db_path.exists() and db_path.stat().st_size > 0:
-        return  # Already initialised in this instance
+        return  # Already initialised in this warm instance
 
-    # Run alembic migrations
-    from alembic.config import Config as AlembicConfig
-    from alembic import command as alembic_command
+    from db.base import Base
+    from db.models import Employee, Role, AuditLog  # noqa: F401 — registers tables
+    from db.session import get_engine, get_sessionmaker
 
-    alembic_ini = PROJECT_ROOT / "alembic.ini"
-    alembic_cfg = AlembicConfig(str(alembic_ini))
-    alembic_cfg.set_main_option("script_location", str(PROJECT_ROOT / "migrations"))
-    alembic_cfg.set_main_option("sqlalchemy.url", f"sqlite:///{TMP_DB}")
-    alembic_command.upgrade(alembic_cfg, "head")
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
 
-    # Seed demo accounts
-    from db.session import get_engine, session_scope
-    from db.models import Employee, Role, normalise_employee_id
-    from auth.security import hash_password
+    # Pre-computed bcrypt hashes — avoids 2+ seconds of hashing per user.
+    # Admin@12345 and Emp@12345 (cost factor 4, fast enough for demo).
+    ADMIN_HASH = "$2b$04$ha6AbZJygfjr6kSFPdUyoOpOX8ZMkugp4S.kHPMQC8agWHt8Hx.Gu"
+    EMP_HASH = "$2b$04$yd.1W8aMUnkRaaE6Km8WXuk.gp30W7KtaKcLnXNbYtOMvoIVUZWRu"
 
     DEMO_EMPLOYEES = [
-        ("ADMIN001", "Fleet Administrator", "ADMIN", "Operations", "Fleet Administrator", "admin@qfleet.local", "Admin@12345"),
-        ("ADMIN002", "Rohit Deshmukh", "ADMIN", "Fleet Management", "Fleet Manager", "rohit.d@qfleet.local", "Admin@12345"),
-        ("EMP001", "Priya Nair", "EMPLOYEE", "Voyage Planning", "Voyage Planner", "priya.nair@qfleet.local", "Emp@12345"),
-        ("EMP002", "Arjun Menon", "EMPLOYEE", "Bunkering", "Bunker Analyst", "arjun.menon@qfleet.local", "Emp@12345"),
-        ("EMP003", "Sara Iqbal", "EMPLOYEE", "Compliance", "Compliance Officer", "sara.iqbal@qfleet.local", "Emp@12345"),
+        ("ADMIN001", "Fleet Administrator", Role.ADMIN, "Operations", "Fleet Administrator", "admin@qfleet.local", ADMIN_HASH),
+        ("ADMIN002", "Rohit Deshmukh", Role.ADMIN, "Fleet Management", "Fleet Manager", "rohit.d@qfleet.local", ADMIN_HASH),
+        ("EMP001", "Priya Nair", Role.EMPLOYEE, "Voyage Planning", "Voyage Planner", "priya.nair@qfleet.local", EMP_HASH),
+        ("EMP002", "Arjun Menon", Role.EMPLOYEE, "Bunkering", "Bunker Analyst", "arjun.menon@qfleet.local", EMP_HASH),
+        ("EMP003", "Sara Iqbal", Role.EMPLOYEE, "Compliance", "Compliance Officer", "sara.iqbal@qfleet.local", EMP_HASH),
     ]
 
-    with session_scope() as session:
-        for emp_id, name, role, dept, designation, email, password in DEMO_EMPLOYEES:
-            norm_id = normalise_employee_id(emp_id)
-            if session.query(Employee).filter_by(employee_id=norm_id).first():
+    Session = get_sessionmaker()
+    session = Session()
+    try:
+        for emp_id, name, role, dept, designation, email, pw_hash in DEMO_EMPLOYEES:
+            if session.query(Employee).filter_by(employee_id=emp_id).first():
                 continue
             emp = Employee(
-                employee_id=norm_id,
+                employee_id=emp_id,
                 full_name=name,
-                role=Role(role),
+                role=role,
                 department=dept,
                 designation=designation,
                 email=email,
-                password_hash=hash_password(password),
+                password_hash=pw_hash,
                 is_active=True,
             )
             session.add(emp)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
 
 try:
     _bootstrap_db()
 except Exception as exc:
-    print(f"[vercel cold-start] DB bootstrap warning: {exc}", file=sys.stderr)
+    import traceback
+    print(f"[vercel cold-start] DB bootstrap failed: {exc}", file=sys.stderr)
+    traceback.print_exc(file=sys.stderr)
 
 # ---- Import the FastAPI app -----------------------------------------------
-from backend.main import app
-
-# Vercel looks for `app` in this module — that's all it needs.
+from backend.main import app  # noqa: E402 — Vercel looks for `app`
