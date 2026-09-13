@@ -1,0 +1,22 @@
+# Vercel only builds the frontend. Everything the API needs stays out of the
+# upload: it makes the deployment small, and it stops Vercel scanning the
+# backend's config for "detected" environment variables that mean nothing here
+# (QGF_JWT_SECRET belongs to the API host, not to a static bundle).
+backend/
+migrations/
+aws/
+deploy/
+alembic.ini
+Dockerfile
+render.yaml
+train_model.py
+apitest.py
+*.pptx
+*.docx
+*.pdf
+*.db
+*.db-shm
+*.db-wal
+Claude outputs/
+node_modules
+frontend/dist

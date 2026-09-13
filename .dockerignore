@@ -2,8 +2,7 @@
 .github
 **/node_modules
 frontend/dist
-frontend/.vercel
-**/__pycache__
+frontend/**/__pycache__
 **/*.pyc
 .pytest_cache
 .venv

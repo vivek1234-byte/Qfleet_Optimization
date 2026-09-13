@@ -1,6 +1,3 @@
-# The API, as it runs anywhere that takes a container — Render, Fly, Railway,
-# Hugging Face Spaces, a VM. The frontend is not in here: it is a static
-# bundle and belongs on a CDN (see frontend/vercel.json).
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
